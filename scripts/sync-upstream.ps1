@@ -2,7 +2,7 @@
 .SYNOPSIS
     Script đồng bộ cập nhật mới nhất từ các repo gốc vào Mcsock-AI-repo.
 .DESCRIPTION
-    Script này sẽ tự động kéo các commit mới nhất từ 13 repository gốc
+    Script này sẽ tự động kéo các commit mới nhất từ 14 repository gốc
     và cập nhật lại các thư mục tương ứng trong monorepo.
 #>
 
@@ -18,6 +18,7 @@ $repos = @(
     [PSCustomObject]@{ Cat = "skills"; Name = "spec-kit"; Url = "https://github.com/github/spec-kit.git" },
     [PSCustomObject]@{ Cat = "skills"; Name = "universal-modder"; Url = "https://github.com/rehan-remade/universal-modder.git" },
     [PSCustomObject]@{ Cat = "skills"; Name = "mattpocock-skills"; Url = "https://github.com/mattpocock/skills.git" },
+    [PSCustomObject]@{ Cat = "skills"; Name = "fable-5-skills"; Url = "https://github.com/kpab/claude-fable-5-skills.git" },
     [PSCustomObject]@{ Cat = "skills"; Name = "ui-ux-pro-max"; Url = "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git" },
     [PSCustomObject]@{ Cat = "mcp-servers"; Name = "context7"; Url = "https://github.com/upstash/context7.git" },
     [PSCustomObject]@{ Cat = "mcp-servers"; Name = "chrome-devtools"; Url = "https://github.com/ChromeDevTools/chrome-devtools-mcp.git" },
@@ -29,7 +30,7 @@ $repos = @(
 )
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  Mcsock-AI-repo: Đang cập nhật từ 13 upstream repositories" -ForegroundColor Cyan
+Write-Host "  Mcsock-AI-repo: Đang cập nhật từ 14 upstream repositories" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 $tempDir = Join-Path $env:TEMP ("sync_upstream_" + [System.Guid]::NewGuid().ToString("N"))
@@ -58,5 +59,5 @@ finally {
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  Tất cả 13 repositories đã được đồng bộ mới nhất!" -ForegroundColor Cyan
+Write-Host "  Tất cả 14 repositories đã được đồng bộ mới nhất!" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan

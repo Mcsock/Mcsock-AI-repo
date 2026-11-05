@@ -8,7 +8,7 @@
 ## 🧭 Mục lục
 
 1. [Cấu trúc Monorepo](#-cấu-trúc-monorepo)
-2. [Danh mục 13 Vũ khí Vibe Coding](#-danh-mục-13-vũ-khí-vibe-coding)
+2. [Danh mục 14 Vũ khí Vibe Coding](#-danh-mục-14-vũ-khí-vibe-coding)
    - [🧠 1. Agent Skills (Quy tắc & Tư duy)](#1-agent-skills-quy-tắc--tư-duy-lập-trình)
    - [🔌 2. MCP Servers (Giao thức mở rộng)](#2-mcp-servers-giao-thức-mở-rộng-siêu-năng-lực)
    - [🛠️ 3. Tools & Frameworks (Phân tích mã nguồn)](#3-tools--frameworks-phân-tích-mã-nguồn--research)
@@ -23,6 +23,7 @@
 Mcsock-AI-repo/
 ├── skills/                     # Bộ kỹ năng, quy tắc & system prompts cho AI Agent
 │   ├── karpathy-skills/        # Triết lý code thực dụng của Andrej Karpathy
+│   ├── fable-5-skills/         # Bộ 10 kỹ năng kiểm soát kỷ luật hành vi & runtime của Agent
 │   ├── ui-ux-pro-max/          # Thiết kế UI/UX đỉnh cao, design tokens & hệ thống màu
 │   ├── spec-kit/               # Quy chuẩn đặc tả kỹ thuật trước khi code từ GitHub
 │   ├── replica-skills/         # Bộ kỹ năng phân tích, reverse engineer & clone full-stack app
@@ -41,20 +42,21 @@ Mcsock-AI-repo/
 │   └── ponytail/               # Framework quản lý & điều phối workflow của AI Agent
 │
 ├── scripts/
-│   └── sync-upstream.ps1       # Script 1-click kéo cập nhật mới nhất từ 13 repo gốc
+│   └── sync-upstream.ps1       # Script 1-click kéo cập nhật mới nhất từ 14 repo gốc
 │
 └── README.md
 ```
 
 ---
 
-## 🧰 Danh mục 13 Vũ khí Vibe Coding
+## 🧰 Danh mục 14 Vũ khí Vibe Coding
 
 ### 1. Agent Skills (Quy tắc & Tư duy Lập trình)
 
 | Tên Skill | Nguồn gốc | Vai trò & Mục đích sử dụng |
 | :--- | :--- | :--- |
 | **`karpathy-skills`** | [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) | Triết lý lập trình thực dụng từ Andrej Karpathy: chống over-engineering, thay đổi có phẫu thuật (surgical edits), viết test rõ ràng và luôn xác minh trước khi coi là hoàn thành. |
+| **`fable-5-skills`** | [kpab/claude-fable-5-skills](https://github.com/kpab/claude-fable-5-skills) | Bộ 10 Agent Skills kiểm soát hành vi: chống over-planning (`act-when-ready`), chống "vẽ vời" (`no-gold-plating`), chống nói dối tiến độ (`grounded-progress`), ghi nhớ bài học (`markdown-memory`) và tự hành liên tục. |
 | **`ui-ux-pro-max`** | [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | Kỹ năng thiết kế giao diện UI/UX chuyên nghiệp: phối màu chuẩn WCAG, typography tỷ lệ vàng, responsive layout và tạo dựng Design System hoàn chỉnh. |
 | **`spec-kit`** | [github/spec-kit](https://github.com/github/spec-kit) | Specification-Driven Development của GitHub: định nghĩa spec, plan, tasks trước khi viết code để AI không đi lạc hướng hay đoán mò nghiệp vụ. |
 | **`replica-skills`** | [Jakeschincariol/replica-skill](https://github.com/Jakeschincariol/replica-skill) | Quy trình bóc tách sản phẩm: lập kế hoạch clone kiến trúc, thiết kế database, tái tạo giao diện và dựng backend tương đương cho một ứng dụng có sẵn. |
@@ -120,7 +122,7 @@ Kho vũ khí này đi kèm script tự động hóa PowerShell `scripts/sync-ups
 powershell -ExecutionPolicy Bypass -File .\scripts\sync-upstream.ps1
 ```
 
-Script sẽ tự động kéo các commit mới nhất từ 13 repo gốc và ghi đè an toàn vào Monorepo của bạn.
+Script sẽ tự động kéo các commit mới nhất từ 14 repo gốc và ghi đè an toàn vào Monorepo của bạn.
 
 ---
 
