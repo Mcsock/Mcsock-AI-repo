@@ -2,7 +2,7 @@
 .SYNOPSIS
     Script đồng bộ cập nhật mới nhất từ các repo gốc vào Mcsock-AI-repo.
 .DESCRIPTION
-    Script này sẽ tự động kéo các commit mới nhất từ 14 repository gốc
+    Script này sẽ tự động kéo các commit mới nhất từ 15 repository gốc
     và cập nhật lại các thư mục tương ứng trong monorepo.
 #>
 
@@ -26,11 +26,12 @@ $repos = @(
     [PSCustomObject]@{ Cat = "tools"; Name = "graphify"; Url = "https://github.com/Graphify-Labs/graphify.git" },
     [PSCustomObject]@{ Cat = "tools"; Name = "agent-reach"; Url = "https://github.com/Panniantong/Agent-Reach.git" },
     [PSCustomObject]@{ Cat = "tools"; Name = "skillspector"; Url = "https://github.com/NVIDIA/SkillSpector.git" },
-    [PSCustomObject]@{ Cat = "tools"; Name = "ponytail"; Url = "https://github.com/DietrichGebert/ponytail.git" }
+    [PSCustomObject]@{ Cat = "tools"; Name = "ponytail"; Url = "https://github.com/DietrichGebert/ponytail.git" },
+    [PSCustomObject]@{ Cat = "tools"; Name = "skill-autopilot"; Url = "https://github.com/deepshal99/skill-autopilot.git" }
 )
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  Mcsock-AI-repo: Đang cập nhật từ 14 upstream repositories" -ForegroundColor Cyan
+Write-Host "  Mcsock-AI-repo: Đang cập nhật từ 15 upstream repositories" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 $tempDir = Join-Path $env:TEMP ("sync_upstream_" + [System.Guid]::NewGuid().ToString("N"))
@@ -59,5 +60,5 @@ finally {
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  Tất cả 14 repositories đã được đồng bộ mới nhất!" -ForegroundColor Cyan
+Write-Host "  Tất cả 15 repositories đã được đồng bộ mới nhất!" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
