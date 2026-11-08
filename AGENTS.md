@@ -30,7 +30,87 @@ Trước khi bắt đầu bất kỳ tác vụ nào, AI Agent phải tra cứu b
 
 ---
 
-## ⚙️ 2. CÁCH CÀI ĐẶT SKILLS VÀO TỪNG LOẠI AI AGENT
+## 🔗 2. CHIẾN THUẬT PHỐI HỢP COMBO & PHÂN ĐỊNH CÁC SKILL GẦN GIỐNG NHAU (SYNERGY PIPELINES)
+
+Trong kho vũ khí có những công cụ cùng giải quyết một miền bài toán (như UI/UX, Planning, Code Review, Automation). **Tuyệt đối không kích hoạt chồng chéo một cách mù quáng** mà phải phối hợp theo đúng chuỗi Pipeline dưới đây:
+
+```mermaid
+flowchart TD
+    User["Yêu cầu từ Người dùng"] --> Autopilot["skill-autopilot (Nhạc trưởng định tuyến)"]
+    
+    subgraph Base["Lớp Nền Kỷ Luật (Luôn bật)"]
+        K["karpathy-skills (Kỷ luật viết Code)"]
+        F["fable-5-skills (Kỷ luật hành vi Agent)"]
+    end
+
+    Autopilot --> UI["Nhánh UI/UX & Frontend"]
+    Autopilot --> Plan["Nhánh Quy hoạch & Kiến trúc"]
+    Autopilot --> Context["Nhánh Đồ thị Tri thức"]
+    Autopilot --> Audit["Nhánh Review & Kiểm toán"]
+
+    UI --> UI1["1. ui-ux-pro-max: Lên ý tưởng màu, font, bố cục"]
+    UI1 --> UI2["2. design-md: Khoá cứng vào DESIGN.md & lint WCAG"]
+    UI2 --> UI3["3. Export Tailwind CSS & Code đồng nhất 100%"]
+
+    Plan --> P1["1. mattpocock/grill-me: Phỏng vấn làm rõ góc khuất"]
+    P1 --> P2["2. spec-kit (App mới) HOẶC replica-skills (Clone app)"]
+    P2 --> P3["3. mattpocock/tdd: Thực thi Red-Green-Refactor"]
+
+    Context --> C1["graphify: Đọc hiểu AST Mã nguồn"]
+    Context --> C2["auto-ontology: Đọc hiểu Schema Database & viết SQL"]
+
+    Audit --> A1["mattpocock/code-review: Review từng PR/Bug"]
+    Audit --> A2["ponytail: Kiểm toán Tech Debt toàn dự án"]
+    Audit --> A3["skillspector: Quét mã độc cho Skill/MCP ngoại lai"]
+```
+
+### 🎨 Combo 1: Thiết kế UI/UX & Code Frontend (`ui-ux-pro-max` + `design-md` + `replica-design`)
+- **Điểm dễ nhầm lẫn:** Cả 3 đều liên quan đến màu sắc, typography, spacing và design system.
+- **Cách phối hợp tối ưu 3 bước:**
+  1. **Khởi tạo ý tưởng:** Dùng **`ui-ux-pro-max`** (khi làm sản phẩm mới) hoặc **`replica-design`** (khi clone giao diện app có sẵn) để chọn phong cách chủ đạo (67 styles), bảng màu và cặp font.
+  2. **Đóng băng chuẩn mực:** Xuất toàn bộ thông số vừa chọn ra file **`DESIGN.md`** theo đúng định dạng YAML + Markdown của **`design-md` (Google Labs)**, sau đó chạy `npx @google/design.md lint DESIGN.md` để đảm bảo độ tương phản đạt chuẩn WCAG AA.
+  3. **Sinh cấu hình & Code:** Chạy `npx @google/design.md export --format css-tailwind DESIGN.md > theme.css`. Từ thời điểm này, mọi AI Agent khi code bất kỳ màn hình nào đều phải đọc `DESIGN.md` làm nguồn chân lý duy nhất — cam kết **0% lệch màu (Zero Visual Drift)** giữa các trang.
+
+### 📋 Combo 2: Lên Kế hoạch & Đặc tả (`grill-me` vs `spec-kit` vs `replica-skills`)
+- **Điểm dễ nhầm lẫn:** Đều dùng để lập kế hoạch, viết PRD/Spec và chia task trước khi code.
+- **Quy tắc chọn và kết hợp:**
+  - **Bước 0 (Khi yêu cầu còn mơ hồ):** Luôn bật **`mattpocock-skills/grill-me`** đầu tiên để phỏng vấn người dùng, ép lộ ra các quyết định thiết kế còn bỏ ngỏ.
+  - **Trường hợp A — Xây dựng tính năng / dự án mới lớn:** Đưa kết quả sau khi grill vào quy trình 6 bước của **`spec-kit`** (`constitution -> specify -> clarify -> plan -> tasks -> implement/converge`).
+  - **Trường hợp B — Clone một ứng dụng đã tồn tại:** Không dùng `spec-kit`, mà chuyển thẳng sang chuỗi 11 bước của **`replica-skills`** (`replica-recon -> replica-architect -> replica-build...`).
+  - **Trường hợp C — Task nhỏ / sửa nhanh (1–3 files):** Bỏ qua `spec-kit` để tránh rườm rà; dùng trực tiếp **`mattpocock-skills/to-spec`** kết hợp **`tdd`**.
+
+### 🛡️ Combo 3: Kỷ luật Code vs Kỷ luật Vận hành (`karpathy-skills` + `fable-5-skills`)
+- **Điểm dễ nhầm lẫn:** Cả hai đều là bộ quy tắc kiềm chế AI không làm ẩu.
+- **Cách dùng tối ưu (Luôn bật song song vì bổ trợ 2 tầng khác nhau):**
+  - **`karpathy-skills` kiểm soát Tầng Mã nguồn (Code Level):** Không viết code thừa, không tạo class/abstraction vô ích, chỉ sửa đúng dòng cần thiết (surgical changes), giữ nguyên comment cũ.
+  - **`fable-5-skills` kiểm soát Tầng Hành vi Phiên (Session/Agent Level):** Đủ thông tin là làm ngay không câu giờ (`act-when-ready`), không tự đẻ thêm tính năng (`no-gold-plating`), không báo cáo hoàn thành khi chưa chạy test thật (`grounded-progress`), giữ đúng phạm vi (`scope-guard`).
+
+### 🕸️ Combo 4: Đồ thị Tri thức Mã nguồn vs Cơ sở dữ liệu (`graphify` + `auto-ontology` + `context7`)
+- **Phân định rạch ròi 3 nguồn tri thức:**
+  1. **Hiểu code nội bộ của dự án:** Dùng **`graphify`** (`graphify query`, `graphify path`).
+  2. **Hiểu cấu trúc bảng biểu, quan hệ JOIN và chỉ số kinh doanh trong Database:** Dùng **`auto-ontology`** (NVIDIA).
+  3. **Hiểu API của thư viện bên thứ 3 (React, Next.js, DrissionPage...):** Dùng MCP **`context7`**.
+
+### 🔍 Combo 5: Kiểm tra, Review & Bảo mật (`mattpocock/code-review` vs `ponytail` vs `skillspector`)
+- **Phân định rạch ròi theo đối tượng kiểm tra:**
+  - **Kiểm tra thay đổi code vừa viết (PR / Bugfix):** Dùng **`mattpocock-skills/code-review`** và **`diagnosing-bugs`**.
+  - **Kiểm toán tổng thể dự án & đo lường Nợ kỹ thuật (Tech Debt) định kỳ:** Dùng bộ kỹ năng **`ponytail`** (`ponytail-audit`, `ponytail-debt`, `ponytail-review`, `ponytail-gain`).
+  - **Kiểm định an ninh một Skill hoặc MCP lạ mới tải trên mạng về:** Dùng **`skillspector` (NVIDIA)** để quét Prompt Injection và lỗ hổng bảo mật trước khi kích hoạt.
+
+### 🖥️ Combo 6: Tương tác Môi trường Ngoài (`agent-reach` vs `chrome-devtools` vs `agent-desktop`)
+- **Thứ tự ưu tiên từ Nhẹ đến Nặng:**
+  1. **Chỉ cần đọc/trích xuất dữ liệu từ Web, YouTube, Reddit, X, GitHub:** Ưu tiên số 1 dùng **`agent-reach`** (nhanh, tốn ít token nhất).
+  2. **Cần điều khiển trình duyệt Web, kiểm tra DOM, Network, Cookie, LCP, A11y:** Dùng MCP **`chrome-devtools`**.
+  3. **Cần điều khiển ứng dụng Desktop native ngoài trình duyệt (Windows/macOS GUI, phần mềm `.exe`, cửa sổ hệ thống):** Dùng **`agent-desktop`** (Vercel Labs).
+
+### 🔓 Combo 7: Dịch ngược & Modding (`rea` + `universal-modder`)
+- **Phối hợp "Tay và Não":**
+  - **`universal-modder`** đóng vai trò **Chiến thuật (Playbook)**: Chỉ dẫn quy trình từng bước để trinh sát cấu trúc game/app và lên phương án can thiệp.
+  - **`rea` (MCP Server)** đóng vai trò **Vũ khí thực thi (Toolchain)**: Cung cấp các lệnh gọi trực tiếp Ghidra, Rizin, Frida, JEB, APKTool để decompile mã máy và hook runtime.
+
+---
+
+## ⚙️ 3. CÁCH CÀI ĐẶT SKILLS VÀO TỪNG LOẠI AI AGENT
 
 Mọi Agent Skill trong repo này đều tuân theo chuẩn `SKILL.md` (có YAML frontmatter `name`, `description`). Tuỳ theo bạn là AI Agent nào, hãy dùng lệnh tương ứng để nạp skill vào dự án mục tiêu (`<TARGET_PROJECT>`):
 
@@ -55,7 +135,7 @@ Sao chép nội dung `SKILL.md` thành file `.mdc` trong `.cursor/rules/<ten-ski
 
 ---
 
-## 🧠 3. HƯỚNG DẪN CHI TIẾT 7 BỘ AGENT SKILLS (`skills/`)
+## 🧠 4. HƯỚNG DẪN CHI TIẾT 7 BỘ AGENT SKILLS (`skills/`)
 
 ### 3.1. `karpathy-skills` (`skills/karpathy-skills/`)
 - **Mục đích:** Áp dụng 4 nguyên tắc vàng của Andrej Karpathy:
@@ -117,7 +197,7 @@ Sao chép nội dung `SKILL.md` thành file `.mdc` trong `.cursor/rules/<ten-ski
 
 ---
 
-## 🔌 4. HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG 3 MCP SERVERS (`mcp-servers/`)
+## 🔌 5. HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG 3 MCP SERVERS (`mcp-servers/`)
 
 Thêm khối cấu hình dưới đây vào file cấu hình MCP của AI Agent (`~/.gemini/antigravity/mcp_config.json`, `claude_desktop_config.json`, hoặc `.cursor/mcp.json`):
 
@@ -158,7 +238,7 @@ Thêm khối cấu hình dưới đây vào file cấu hình MCP của AI Agent 
 
 ---
 
-## 🛠️ 5. HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG 8 TOOLS & FRAMEWORKS (`tools/`)
+## 🛠️ 6. HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG 8 TOOLS & FRAMEWORKS (`tools/`)
 
 ### 5.1. `graphify` (`tools/graphify/`) — Knowledge Graph cho Codebase
 - **Công dụng:** Biến toàn bộ mã nguồn dự án thành Đồ thị Tri thức (Knowledge Graph) lưu tại `graphify-out/`. Giúp AI hiểu kiến trúc dự án lớn mà **không cần đọc toàn bộ file thô** (tiết kiệm 70x token).
@@ -261,7 +341,7 @@ Thêm khối cấu hình dưới đây vào file cấu hình MCP của AI Agent 
 
 ---
 
-## 🔄 6. CẬP NHẬT TOÀN BỘ 18 REPOS TỪ UPSTREAM
+## 🔄 7. CẬP NHẬT TOÀN BỘ 18 REPOS TỪ UPSTREAM
 
 Bất kỳ lúc nào người dùng yêu cầu kiểm tra cập nhật mới nhất cho kho vũ khí này, AI Agent chỉ cần chạy lệnh:
 
