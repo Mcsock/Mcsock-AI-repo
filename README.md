@@ -8,7 +8,7 @@
 ## 🧭 Mục lục
 
 1. [Cấu trúc Monorepo](#-cấu-trúc-monorepo)
-2. [Danh mục 16 Vũ khí Vibe Coding](#-danh-mục-16-vũ-khí-vibe-coding)
+2. [Danh mục 17 Vũ khí Vibe Coding](#-danh-mục-17-vũ-khí-vibe-coding)
    - [🧠 1. Agent Skills (Quy tắc & Tư duy)](#1-agent-skills-quy-tắc--tư-duy-lập-trình)
    - [🔌 2. MCP Servers (Giao thức mở rộng)](#2-mcp-servers-giao-thức-mở-rộng-siêu-năng-lực)
    - [🛠️ 3. Tools & Frameworks (Phân tích mã nguồn)](#3-tools--frameworks-phân-tích-mã-nguồn--research)
@@ -41,17 +41,18 @@ Mcsock-AI-repo/
 │   ├── skillspector/           # NVIDIA SkillSpector: Kiểm định & đánh giá chất lượng Agent Skills
 │   ├── ponytail/               # Framework quản lý & điều phối workflow của AI Agent
 │   ├── skill-autopilot/        # Universal Skill Router & Autopilot xâu chuỗi workflow
-│   └── agent-desktop/          # Vercel Labs Computer-Use & Desktop Automation CLI/MCP
+│   ├── agent-desktop/          # Vercel Labs Computer-Use & Desktop Automation CLI/MCP
+│   └── auto-ontology/          # NVIDIA Auto-Ontology: Tự động xây dựng Semantic Knowledge Graph & MCP cho Database
 │
 ├── scripts/
-│   └── sync-upstream.ps1       # Script 1-click kéo cập nhật mới nhất từ 16 repo gốc
+│   └── sync-upstream.ps1       # Script 1-click kéo cập nhật mới nhất từ 17 repo gốc
 │
 └── README.md
 ```
 
 ---
 
-## 🧰 Danh mục 16 Vũ khí Vibe Coding
+## 🧰 Danh mục 17 Vũ khí Vibe Coding
 
 ### 1. Agent Skills (Quy tắc & Tư duy Lập trình)
 
@@ -87,6 +88,7 @@ Mcsock-AI-repo/
 | **`ponytail`** | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | Công cụ tinh gọn hỗ trợ quản trị, cấu hình và chạy các luồng tự động hóa cho AI Agent. |
 | **`skill-autopilot`** | [deepshal99/skill-autopilot](https://github.com/deepshal99/skill-autopilot) | Universal skill router cho Claude Code & AI Agent: tự động so khớp task với skill, xử lý trùng lặp và xâu chuỗi (chain) workflow tự động từ đầu đến cuối. |
 | **`agent-desktop`** | [vercel-labs/agent-desktop](https://github.com/vercel-labs/agent-desktop) | Công cụ "Computer Use" từ Vercel Labs: trao quyền cho AI tương tác trực tiếp với hệ điều hành/màn hình desktop (click, type, đọc accessibility tree) qua CLI và MCP. |
+| **`auto-ontology`** | [NVIDIA/auto-ontology](https://github.com/NVIDIA/auto-ontology) | Framework từ NVIDIA tự động sinh Ontology & Semantic Knowledge Graph từ Database Schemas/Metadata, tích hợp MCP Server giúp AI viết SQL chính xác tuyệt đối. |
 
 ---
 
@@ -126,7 +128,7 @@ Kho vũ khí này đi kèm script tự động hóa PowerShell `scripts/sync-ups
 powershell -ExecutionPolicy Bypass -File .\scripts\sync-upstream.ps1
 ```
 
-Script sẽ tự động kéo các commit mới nhất từ 16 repo gốc và ghi đè an toàn vào Monorepo của bạn.
+Script sẽ tự động kéo các commit mới nhất từ 17 repo gốc và ghi đè an toàn vào Monorepo của bạn.
 
 ---
 

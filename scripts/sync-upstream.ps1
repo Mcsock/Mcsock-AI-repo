@@ -28,11 +28,12 @@ $repos = @(
     [PSCustomObject]@{ Cat = "tools"; Name = "skillspector"; Url = "https://github.com/NVIDIA/SkillSpector.git" },
     [PSCustomObject]@{ Cat = "tools"; Name = "ponytail"; Url = "https://github.com/DietrichGebert/ponytail.git" },
     [PSCustomObject]@{ Cat = "tools"; Name = "skill-autopilot"; Url = "https://github.com/deepshal99/skill-autopilot.git" },
-    [PSCustomObject]@{ Cat = "tools"; Name = "agent-desktop"; Url = "https://github.com/vercel-labs/agent-desktop.git" }
+    [PSCustomObject]@{ Cat = "tools"; Name = "agent-desktop"; Url = "https://github.com/vercel-labs/agent-desktop.git" },
+    [PSCustomObject]@{ Cat = "tools"; Name = "auto-ontology"; Url = "https://github.com/NVIDIA/auto-ontology.git" }
 )
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  Mcsock-AI-repo: Đang cập nhật từ 16 upstream repositories" -ForegroundColor Cyan
+Write-Host "  Mcsock-AI-repo: Đang cập nhật từ 17 upstream repositories" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 $tempDir = Join-Path $env:TEMP ("sync_upstream_" + [System.Guid]::NewGuid().ToString("N"))
@@ -61,5 +62,5 @@ finally {
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  Tất cả 16 repositories đã được đồng bộ mới nhất!" -ForegroundColor Cyan
+Write-Host "  Tất cả 17 repositories đã được đồng bộ mới nhất!" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
