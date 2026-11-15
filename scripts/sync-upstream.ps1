@@ -9,6 +9,8 @@
 [CmdletBinding()]
 param()
 
+$ErrorActionPreference = 'Stop'
+
 $env:PATH = "C:\Program Files\Git\cmd;C:\Program Files\GitHub CLI;" + $env:PATH
 $base = Split-Path -Parent $PSScriptRoot
 
@@ -40,30 +42,60 @@ Write-Host "==========================================================" -Foregro
 $tempDir = Join-Path $env:TEMP ("sync_upstream_" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
+$failures = @()
+$updated = 0
 try {
     foreach ($r in $repos) {
         $targetDir = Join-Path (Join-Path $base $r.Cat) $r.Name
         $cloneDir = Join-Path $tempDir $r.Name
+        $backupDir = Join-Path $tempDir ($r.Name + '.previous')
+        $expectedTarget = [IO.Path]::GetFullPath($targetDir)
+        if (-not $expectedTarget.StartsWith($base + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Upstream target is outside the repository: $targetDir"
+        }
         Write-Host "-> Checking $($r.Cat)/$($r.Name) ($($r.Url))..." -ForegroundColor Yellow
-        git clone --depth 1 $r.Url $cloneDir 2>$null
-        if (Test-Path "$cloneDir\.git") {
+        try {
+            $localChanges = git -C $base status --porcelain -- "$($r.Cat)/$($r.Name)"
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect local changes.' }
+            if ($localChanges) { throw 'Local changes must be preserved before syncing this folder.' }
+            git clone --depth 1 --quiet $r.Url $cloneDir
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $cloneDir '.git'))) {
+                throw 'Upstream clone failed. The existing folder was preserved.'
+            }
             $commitInfo = git -C $cloneDir log -1 --format="%h | %ci | %s"
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify upstream commit.' }
             Write-Host "   Latest upstream: $commitInfo" -ForegroundColor Gray
-            Remove-Item -Recurse -Force "$cloneDir\.git"
+            $gitDirectory = (Resolve-Path -LiteralPath (Join-Path $cloneDir '.git')).ProviderPath
+            if ($gitDirectory -ne (Join-Path $cloneDir '.git') -or
+                    -not $gitDirectory.StartsWith($tempDir + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Unexpected clone metadata path.'
+            }
+            Remove-Item -LiteralPath $gitDirectory -Recurse -Force
+            if (Test-Path -LiteralPath $targetDir) {
+                $resolvedTarget = (Resolve-Path -LiteralPath $targetDir).ProviderPath
+                if ($resolvedTarget -ne $expectedTarget -or
+                        ((Get-Item -LiteralPath $resolvedTarget -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    throw 'Unexpected upstream target path.'
+                }
+                Move-Item -LiteralPath $resolvedTarget -Destination $backupDir
+            }
+            Move-Item -LiteralPath $cloneDir -Destination $targetDir
+            $updated++
+            Write-Host "   [OK] Synced: $($r.Cat)/$($r.Name)" -ForegroundColor Green
         }
-        if (Test-Path $targetDir) {
-            Remove-Item -Recurse -Force $targetDir
+        catch {
+            if ((Test-Path -LiteralPath $backupDir) -and -not (Test-Path -LiteralPath $targetDir)) {
+                Move-Item -LiteralPath $backupDir -Destination $targetDir
+            }
+            $failures += "$($r.Name): $($_.Exception.Message)"
+            Write-Warning $failures[-1]
         }
-        Copy-Item -Recurse -Force $cloneDir $targetDir
-        Write-Host "   [OK] Synced: $($r.Cat)/$($r.Name)" -ForegroundColor Green
     }
 }
 finally {
-    if (Test-Path $tempDir) {
-        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-    }
+    # Keep previous copies available for recovery after a completed sync.
+    Write-Host "Staging and previous copies: $tempDir" -ForegroundColor Gray
 }
 
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  All 18 repositories are synced to latest upstream!" -ForegroundColor Cyan
-Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host "Synced $updated/$($repos.Count) upstream repositories." -ForegroundColor Cyan
+if ($failures.Count) { throw ($failures -join [Environment]::NewLine) }

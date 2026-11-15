@@ -95,9 +95,9 @@ it.each([
   {
     budget: "nesting",
     value: nested(MAX_JSON_DEPTH - 1),
-    reason: /binary plist nesting.*decode budget/iu,
-    limits: { maximum_nesting_depth: MAX_JSON_DEPTH - 2 },
-    allowance: /998-level.*plist nesting.*no runtime override/iu,
+    reason: /plist exceeds 997 nesting levels/iu,
+    limits: { maximum_nesting_depth: MAX_JSON_DEPTH - 3 },
+    allowance: /997-level.*plist nesting.*no runtime override/iu,
   },
 ])(
   "names the fixed binary plist $budget allowance instead of host memory",

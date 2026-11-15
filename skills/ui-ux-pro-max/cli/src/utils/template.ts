@@ -260,6 +260,14 @@ export async function listBundledSubSkills(): Promise<string[]> {
   return entries.filter(e => e.isDirectory()).map(e => e.name).sort();
 }
 
+async function* subSkillsToCopy(skillsParentDir: string, force: boolean): AsyncGenerator<string> {
+  for (const name of await listBundledSubSkills()) {
+    if (force || !(await exists(join(skillsParentDir, name)))) {
+      yield name;
+    }
+  }
+}
+
 /**
  * Paths of an earlier layout of aiType that exist under baseDir: the old skill
  * file, the orchestrator folder and the bundled sub-skills left next to it.
@@ -302,11 +310,8 @@ export async function removeLegacyInstall(baseDir: string, aiType: string): Prom
  */
 async function copySubSkills(skillsParentDir: string, force: boolean): Promise<void> {
   const skillsSource = join(ASSETS_DIR, 'skills');
-  if (!(await exists(skillsSource))) return;
-
-  for (const name of await listBundledSubSkills()) {
+  for await (const name of subSkillsToCopy(skillsParentDir, force)) {
     const target = join(skillsParentDir, name);
-    if (await exists(target) && !force) continue;
     await mkdir(target, { recursive: true });
     await cp(join(skillsSource, name), target, { recursive: true });
   }
@@ -424,24 +429,24 @@ export async function planPlatformInstallActions(
 
   const actions: string[] = [];
   const skillFileExists = await exists(skillFilePath);
-  actions.push(
-    skillFileExists && !force
-      ? `Would skip (exists, use --force): ${skillFilePath}`
-      : `Would write: ${skillFilePath}`
-  );
+  if (skillFileExists && !force) {
+    return [`Would skip (exists, use --force): ${skillFilePath}`];
+  }
+  actions.push(`Would write: ${skillFilePath}`);
   actions.push(`Would copy data + scripts: ${dataDir}`);
 
-  const subSkills = await listBundledSubSkills();
+  const subSkills: string[] = [];
+  for await (const name of subSkillsToCopy(skillsParentDir, force)) {
+    subSkills.push(name);
+  }
   if (subSkills.length > 0) {
     actions.push(
       `Would copy ${subSkills.length} sub-skills (${subSkills.join(', ')}): ${skillsParentDir}`
     );
   }
 
-  if (!skillFileExists || force) {
-    for (const path of await findLegacyInstallPaths(baseDir, aiType)) {
-      actions.push(`Would remove legacy install: ${join(baseDir, path)}`);
-    }
+  for (const path of await findLegacyInstallPaths(baseDir, aiType)) {
+    actions.push(`Would remove legacy install: ${join(baseDir, path)}`);
   }
 
   return actions;
