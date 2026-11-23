@@ -64,6 +64,22 @@
   },
   "overrides": [
     {
+      "files": ["scripts/**/*.mjs", "scripts/**/*.js", "scripts/**/*.cjs"],
+      "env": { "node": true, "es2024": true },
+      "rules": { "no-undef": "error" }
+    },
+    {
+      "files": [
+        "scripts/lib/browser-scenario-service-workers-e2e.mjs",
+        "scripts/lib/browser-screenshot-e2e.mjs",
+        "scripts/verify-browser-dom-destinations.mjs"
+      ],
+      "globals": {
+        "document": "readonly",
+        "ServiceWorkerContainer": "readonly"
+      }
+    },
+    {
       "files": ["src/domain/**/*.ts"],
       "rules": { "rea/no-locale-compare": "error" }
     },
@@ -140,6 +156,23 @@
       "rules": { "rea/no-raw-file-handle-close": "off" }
     },
     {
+      "files": ["src/cli*.ts", "src/cli/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/contracts/toolContracts.js"],
+                "allowTypeImports": true,
+                "message": "CLI startup registers every command without loading the complete tool catalog (tests/boundary/cli/cliStartupImports.test.ts). Import the command's own contract group instead."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["src/domain/javascript/javascriptSemanticTraversal.ts"],
       "rules": { "rea/no-babel-visitor-keys": "off" }
     },
@@ -188,12 +221,6 @@
     {
       "files": ["tests/**/*.test.ts", "src/**/*.test.ts"],
       "rules": {
-        "vitest/valid-expect": [
-          "warn",
-          {
-            "maxArgs": 2
-          }
-        ],
         "vitest/valid-expect-in-promise": "error",
         "vitest/no-focused-tests": "error"
       }

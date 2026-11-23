@@ -2,7 +2,10 @@ import { InvalidResidualUnknownGraphError } from "./residualUnknownGraphError.js
 import { withEvidenceSubjectDeclaration } from "./evidenceSubject.js";
 import { digestSchema } from "./digests.js";
 import { EvidenceIntegrityError } from "./evidenceErrors.js";
-import { AnalysisInputError } from "./analysisErrorCore.js";
+import {
+  AnalysisInputError,
+  type AnalysisInputIssue,
+} from "./analysisErrorCore.js";
 import { err, ok, type Result } from "./result.js";
 import { describeValidationFailure } from "./validationFailure.js";
 import { equalJsonText } from "./jsonSerialization.js";
@@ -12,6 +15,9 @@ import canonicalize from "canonicalize";
 import { compareUnicodeCodePoints } from "./unicodeCodePointOrder.js";
 
 import {
+  authenticateParsedEvidence,
+  detachedEvidenceSchema,
+  evidenceFileTarget,
   evidenceSchema,
   immutableEvidence,
   parseEvidence,
@@ -28,7 +34,8 @@ import {
   EVIDENCE_FORMAT_REVISION,
   evidenceFormatSchema,
   RECREATE_EVIDENCE_GUIDANCE,
-  UnsupportedEvidenceFormatError,
+  isUnsupportedEvidenceFormat,
+  type UnsupportedEvidenceFormat,
 } from "./evidenceFormat.js";
 
 const artifactManifestBaseSchema = z.strictObject({
@@ -58,6 +65,11 @@ export const evidenceBundleSchema = z.strictObject({
   captures: z.array(captureManifestSchema),
   unknowns: z.array(residualUnknownSchema),
   records: z.array(evidenceSchema),
+});
+
+/** Strict bundle parser that detaches sealed JSON payloads for mutable caller exports. */
+export const detachedEvidenceBundleSchema = evidenceBundleSchema.extend({
+  records: z.array(detachedEvidenceSchema),
 });
 
 export type EvidenceBundle = z.infer<typeof evidenceBundleSchema>;
@@ -119,17 +131,18 @@ export const createEvidenceBundle = (
   return {
     evidence_format: EVIDENCE_FORMAT_REVISION,
     artifacts: uniqueSorted(
-      sortedRecords.flatMap(({ subject }) =>
-        subject === null
+      sortedRecords.flatMap((record) => {
+        const file = evidenceFileTarget(record);
+        return file === undefined
           ? []
           : [
               artifactManifestSchema.parse({
-                digest: subject.digest,
-                format: subject.format,
-                architecture: subject.architecture,
+                digest: { sha256: file.sha256 },
+                format: file.format,
+                architecture: file.architecture,
               }),
-            ],
-      ),
+            ];
+      }),
     ),
     providers: uniqueSorted(sortedRecords.map(({ provider }) => provider)),
     environments: uniqueSorted(
@@ -193,7 +206,8 @@ export const evidenceBundleForTarget = (
         // Mutation subjects record the target active at the time of an edit,
         // which need not be the question's immutable investigation scope.
         return (
-          record?.subject?.digest.sha256 === sha256 ||
+          (record !== undefined &&
+            evidenceFileTarget(record)?.sha256 === sha256) ||
           (mutationEvidenceIds.has(evidenceId) &&
             record?.predicate_type === "rea.residual-unknown-mutation")
         );
@@ -232,7 +246,7 @@ export const evidenceBundleForTarget = (
     bundle.records
       .filter(
         (record) =>
-          record.subject?.digest.sha256 === sha256 ||
+          evidenceFileTarget(record)?.sha256 === sha256 ||
           mutationIds.has(record.evidence_id),
       )
       .map((record) => record.evidence_id),
@@ -266,7 +280,7 @@ export const referencedEvidenceIds = (
 ];
 
 type EvidenceBundleValidationFailure =
-  | UnsupportedEvidenceFormatError
+  | UnsupportedEvidenceFormat
   | z.ZodError
   | DuplicateEvidenceRecordError
   | InvalidResidualUnknownGraphError
@@ -291,10 +305,16 @@ const describeEvidenceBundleFailure = (
       message: `Expected an Evidence bundle with records and manifest arrays, but this JSON is one Evidence record (${record.evidence_id}). Export a session bundle with the MCP export_evidence_bundle tool and supply that file.`,
     };
   } catch (recordFailure: unknown) {
-    if (!(recordFailure instanceof z.ZodError)) throw recordFailure;
+    // An earlier-format record is not a current record either; the bundle
+    // failure below already carries the recreate guidance.
+    if (
+      !(recordFailure instanceof z.ZodError) &&
+      !isUnsupportedEvidenceFormat(recordFailure)
+    )
+      throw recordFailure;
     // The format owner decides earlier bundles once; its message carries the
     // recreate guidance instead of per-field schema failures.
-    if (cause instanceof UnsupportedEvidenceFormatError)
+    if (isUnsupportedEvidenceFormat(cause))
       return { kind: "unsupported-format", cause, message: cause.message };
     return {
       kind: "invalid-bundle",
@@ -335,6 +355,20 @@ const parseBundle = (input: unknown, seal: boolean): EvidenceBundle => {
   return authenticateBundle(evidenceBundleSchema.parse(input), seal);
 };
 
+/**
+ * Refusal of one standalone Evidence record where a bundle is required; its
+ * `detected_kind` matches the file reader's `wrong-kind` fact.
+ */
+export const singleEvidenceRecordIssue = (
+  path: readonly (string | number)[],
+  message: string,
+): AnalysisInputIssue => ({
+  path,
+  reason: "invalid_value",
+  message,
+  observed: { detected_kind: "evidence-record" },
+});
+
 /** Read a source bundle while preserving unexpected implementation failures. */
 export const readEvidenceBundle = (
   input: unknown,
@@ -351,7 +385,7 @@ export const readEvidenceBundle = (
       new AnalysisInputError(
         context.operation,
         { cause, userMessage: message, remediationAction: message },
-        [{ path: context.path, reason: "invalid_value", message }],
+        [singleEvidenceRecordIssue(context.path, message)],
       ),
     );
   return err(
@@ -372,7 +406,7 @@ const readBundle = (
     );
   } catch (cause: unknown) {
     if (
-      !(cause instanceof UnsupportedEvidenceFormatError) &&
+      !isUnsupportedEvidenceFormat(cause) &&
       !(cause instanceof z.ZodError) &&
       !(cause instanceof DuplicateEvidenceRecordError) &&
       !(cause instanceof InvalidResidualUnknownGraphError) &&
@@ -399,12 +433,7 @@ const authenticateBundle = (
   const canonical = createEvidenceBundle(
     parsed.records.map((record, index) => {
       try {
-        if (!seal) return parseEvidence(record);
-        // Schema parsing gave this boundary exclusive ownership. Register only
-        // validated payloads before authenticating the complete record envelope.
-        record.normalized_result = freezeJsonSnapshot(record.normalized_result);
-        record.raw_result = freezeJsonSnapshot(record.raw_result);
-        return immutableEvidence(record);
+        return authenticateParsedEvidence(record, seal);
       } catch (cause: unknown) {
         if (cause instanceof z.ZodError)
           throw new z.ZodError(
@@ -418,14 +447,28 @@ const authenticateBundle = (
     }),
     parsed.unknowns,
   );
-  if (!equalJsonText(parsed, canonical))
+  const differingSections: (keyof EvidenceBundle)[] = [];
+  for (const section of Object.keys(canonical) as (keyof EvidenceBundle)[]) {
+    if (section === "records") {
+      let sameOrder = parsed.records.length === canonical.records.length;
+      if (sameOrder) {
+        for (let index = 0; index < parsed.records.length; index += 1) {
+          if (parsed.records[index] !== canonical.records[index]) {
+            sameOrder = false;
+            break;
+          }
+        }
+      }
+      if (!sameOrder && !equalJsonText(parsed.records, canonical.records))
+        differingSections.push("records");
+    } else if (!equalJsonText(parsed[section], canonical[section])) {
+      differingSections.push(section);
+    }
+  }
+  if (differingSections.length > 0)
     // Name only the sections that differ, so an unchanged section is not
     // blamed for another section's ordering or content.
-    throw new NonCanonicalEvidenceBundleError(
-      (Object.keys(canonical) as (keyof EvidenceBundle)[]).filter(
-        (section) => !equalJsonText(parsed[section], canonical[section]),
-      ),
-    );
+    throw new NonCanonicalEvidenceBundleError(differingSections);
   if (seal) {
     freezeJsonSnapshot(canonical);
     immutableBundles.set(canonical, canonical);
@@ -687,13 +730,19 @@ const rejectDependencyCycles = (
   }
 };
 
-/** Encode a validated bundle as byte-stable RFC 8785 canonical JSON. */
-export const serializeEvidenceBundle = (bundle: EvidenceBundle): string => {
-  const serialized = canonicalize(parseEvidenceBundle(bundle));
+/** Encode an already-authenticated bundle as byte-stable RFC 8785 canonical JSON. */
+export const serializeValidatedEvidenceBundle = (
+  bundle: EvidenceBundle,
+): string => {
+  const serialized = canonicalize(bundle);
   if (serialized === undefined)
     throw new TypeError("Evidence bundle canonicalization failed");
   return serialized;
 };
+
+/** Encode a validated bundle as byte-stable RFC 8785 canonical JSON. */
+export const serializeEvidenceBundle = (bundle: EvidenceBundle): string =>
+  serializeValidatedEvidenceBundle(parseEvidenceBundle(bundle));
 
 const uniqueSorted = <Value>(values: readonly Value[]): Value[] => {
   const unique = new Map<string, Value>();

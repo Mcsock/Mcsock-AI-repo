@@ -1,5 +1,7 @@
 import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 
+import { err, ok, type Result } from "../domain/result.js";
+import { isQualifiedCallerPath } from "../filesystem/callerPath.js";
 import { windowsAppDataRoots } from "./MsixPackageStorage.js";
 
 /**
@@ -42,6 +44,31 @@ export const absoluteXdgConfigHome = ({
     : join(home, ".config");
 };
 
+/** MCPorter's expandHome: a leading `~` path segment names the home folder. */
+export const mcporterExpandHome = (value: string, home: string): string =>
+  value === "~"
+    ? home
+    : value.startsWith("~/") || value.startsWith("~\\")
+      ? join(home, value.slice(2))
+      : value;
+
+/**
+ * MCPorter's XDG folder (`mcporterConfigCandidates`): `XDG_CONFIG_HOME` is
+ * trimmed and `~`-expanded, and only an absolute result counts. Otherwise
+ * MCPorter uses its legacy `~/.mcporter` folder rather than `~/.config`, so
+ * there is no XDG folder and this returns `undefined`.
+ */
+export const mcporterXdgConfigHome = ({
+  home,
+  platform,
+  env,
+}: ClientRootContext): string | undefined => {
+  const value = mcporterExpandHome(env.XDG_CONFIG_HOME?.trim() ?? "", home);
+  return (platform === "win32" ? win32 : posix).isAbsolute(value)
+    ? value
+    : undefined;
+};
+
 /**
  * Code-OSS's `getUserDataPath` for one product's data folder (`Code` for VS
  * Code; `Cursor`, `Windsurf`, `VSCodium` or `Code - Insiders` for builds that
@@ -74,4 +101,50 @@ export const vscodeUserDirectory = (
         ? resolve(userData)
         : resolve(env.VSCODE_CWD || process.cwd(), userData);
   return join(absoluteUserData, "User");
+};
+
+/** A client path REA cannot place, and the user's recovery. */
+export interface ClientRootFailure {
+  readonly path: string;
+  readonly message: string;
+}
+
+/**
+ * Why a client path still depends on where the client runs, or `undefined`
+ * when it names one location. On Windows a rooted path without a drive
+ * (`\\cline`, `/cline`) resolves against the client's current drive, so only
+ * drive-qualified and UNC paths name one location.
+ */
+export const clientPathDependence = (
+  path: string,
+  platform: NodeJS.Platform,
+): "relative" | "driveless" | undefined => {
+  if (isQualifiedCallerPath(path, platform)) return undefined;
+  return platform === "win32" && win32.isAbsolute(path)
+    ? "driveless"
+    : "relative";
+};
+
+/**
+ * A client folder or file named by an environment variable that the client
+ * resolves against its own working directory. Setup cannot know that
+ * directory, so only a path naming one location is selected; a relative or
+ * Windows drive-less one is refused rather than resolved against REA's.
+ */
+export const absoluteClientRoot = (
+  path: string,
+  variable: string,
+  client: string,
+  platform: NodeJS.Platform,
+): Result<string, ClientRootFailure> => {
+  const dependence = clientPathDependence(path, platform);
+  return dependence === undefined
+    ? ok(path)
+    : err({
+        path,
+        message:
+          dependence === "relative"
+            ? `${variable} is relative, so the location ${client} reads depends on its working directory. Set an absolute ${variable} before configuring ${client}.`
+            : `${variable} has no drive, so the location ${client} reads depends on its current drive. Set ${variable} to a path with a drive letter or a UNC path before configuring ${client}.`,
+      });
 };

@@ -1,5 +1,6 @@
 import { ParseFailureError } from "./parseFailure.js";
 import { byteOrderMarkEncoding } from "./textByteOrderMark.js";
+import { decodeStrictUtf8, strictUtf8Decoder } from "./strictUtf8.js";
 
 const XML_PLIST_FORMAT = "xml-plist";
 
@@ -35,6 +36,12 @@ export class XmlPlistTextDecodeError extends ParseFailureError<
   }
 }
 
+const XML_PLIST_DECODERS = {
+  "utf-8": strictUtf8Decoder("strip-signature"),
+  "utf-16le": new TextDecoder("utf-16le", { fatal: true }),
+  "utf-16be": new TextDecoder("utf-16be", { fatal: true }),
+} as const;
+
 /** Decode BOM-aware XML plist text and verify any declaration against its bytes. */
 export const decodeXmlPlistText = (bytes: Uint8Array): string => {
   const marked = byteOrderMarkEncoding(bytes);
@@ -53,7 +60,7 @@ export const decodeXmlPlistText = (bytes: Uint8Array): string => {
   if (prolog !== undefined) verifyEncodingDeclaration(declaration, encoding);
   let text: string;
   try {
-    text = new TextDecoder(encoding, { fatal: true }).decode(bytes);
+    text = XML_PLIST_DECODERS[encoding].decode(bytes);
   } catch (cause: unknown) {
     throw new XmlPlistTextDecodeError(
       "invalid-bytes",
@@ -85,8 +92,9 @@ const asciiXmlDeclaration = (bytes: Uint8Array): string | undefined => {
   for (let index = start + 5; index < bytes.length; index += 1) {
     if (bytes[index]! > 0x7f) return undefined;
     if (bytes[index] === 0x3f && bytes[index + 1] === 0x3e)
-      return new TextDecoder("utf-8", { fatal: true }).decode(
+      return decodeStrictUtf8(
         bytes.subarray(start, index + 2),
+        "strip-signature",
       );
   }
   return undefined;

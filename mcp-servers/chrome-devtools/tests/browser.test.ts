@@ -12,7 +12,7 @@ import {describe, it} from 'node:test';
 import sinon from 'sinon';
 
 import {BrowserManager} from '../src/BrowserManager.js';
-import {puppeteer, type Browser} from '../src/third_party/index.js';
+import {puppeteer, type Browser} from '../src/third_party/browser.js';
 
 import {
   createMockPuppeteerBrowser,
@@ -186,6 +186,36 @@ describe('browser', () => {
         handleSIGTERM: false,
         handleSIGHUP: false,
       });
+    });
+
+    it('disables following symlinks in Puppeteer before launching', async () => {
+      const setFollowSymlinksStub = sinon.stub(puppeteer, 'setFollowSymlinks');
+      const launchStub = sinon
+        .stub(puppeteer, 'launch')
+        .resolves(createMockPuppeteerBrowser());
+      const manager = new BrowserManager(
+        createMockServerConfig({isolated: true}),
+      );
+
+      await manager.ensureBrowser();
+
+      sinon.assert.calledOnceWithExactly(setFollowSymlinksStub, false);
+      sinon.assert.callOrder(setFollowSymlinksStub, launchStub);
+    });
+
+    it('disables following symlinks in Puppeteer before connecting', async () => {
+      const setFollowSymlinksStub = sinon.stub(puppeteer, 'setFollowSymlinks');
+      const connectStub = sinon
+        .stub(puppeteer, 'connect')
+        .resolves(createMockPuppeteerBrowser());
+      const manager = new BrowserManager(
+        createMockServerConfig({browserUrl: 'http://127.0.0.1:9222'}),
+      );
+
+      await manager.ensureBrowser();
+
+      sinon.assert.calledOnceWithExactly(setFollowSymlinksStub, false);
+      sinon.assert.callOrder(setFollowSymlinksStub, connectStub);
     });
 
     it('connects to a browser when browserUrl is set and disconnects on close()', async () => {

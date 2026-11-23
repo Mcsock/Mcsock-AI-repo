@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { schemaVerifierEnvironment } from "./lib/mcp-verification-environment.mjs";
+import { canonicalOutputSchema } from "./lib/canonical-output-schema.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -56,10 +56,23 @@ const tool = (name, args, cwd) =>
     maxBuffer: 32 * 1024 * 1024,
   });
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-const assertEvidenceParity = (cli, mcp, path) => {
-  const { caller_input_path: callerInputPath, ...cliShared } = cli;
-  assert.equal(callerInputPath, path);
-  assert.equal(Object.hasOwn(mcp, "caller_input_path"), false);
+const assertEvidenceParity = (cli, mcp, input) => {
+  const {
+    caller_input_path: callerInputPath,
+    caller_input_paths: callerInputPaths,
+    ...cliShared
+  } = cli;
+  const auxiliaryPaths = Object.fromEntries(
+    Object.entries({
+      glue_paths: input.glue_paths,
+      candidate_paths: input.candidate_paths,
+    }).filter(([, paths]) => paths.length > 0),
+  );
+  assert.equal(callerInputPath, input.path);
+  assert.deepEqual(
+    callerInputPaths,
+    Object.keys(auxiliaryPaths).length === 0 ? undefined : auxiliaryPaths,
+  );
   assert.deepEqual(cliShared, mcp);
 };
 const run = createVerifierRun();
@@ -90,12 +103,12 @@ const callTool = (request) =>
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [entrypoint, "mcp"],
-  env: schemaVerifierEnvironment({
+  env: {
     ...environment,
     TMPDIR: childTempRoot,
     TMP: childTempRoot,
     TEMP: childTempRoot,
-  }),
+  },
   stderr: "pipe",
 });
 let cases = 0;
@@ -110,10 +123,10 @@ try {
   const advertised = (await client.listTools()).tools.find(
     ({ name }) => name === "inspect_wasm_artifact",
   );
-  assert.ok(advertised?.outputSchema, "WASM tool must advertise output schema");
+  assert.ok(advertised, "WASM tool must advertise output schema");
   const ajv = new Ajv2020({ strict: false, validateFormats: false });
   assert.ok(ajv.validateSchema(advertised.inputSchema));
-  assert.ok(ajv.validateSchema(advertised.outputSchema));
+  assert.ok(ajv.validateSchema(canonicalOutputSchema(advertised.name)));
   const inspectCli = async (input) => {
     try {
       return JSON.parse(
@@ -280,12 +293,15 @@ try {
     });
     assert.notEqual(reply.isError, true, mcpTextValue(reply));
     assert.ok(
-      ajv.validate(advertised.outputSchema, reply.structuredContent),
+      ajv.validate(
+        canonicalOutputSchema(advertised.name),
+        reply.structuredContent,
+      ),
       JSON.stringify(ajv.errors),
     );
     const mcp = parseEvidence(requireMcpOutput(reply, "inspect_wasm_artifact"));
     assert.equal(cli.evidence_id, mcp.evidence_id);
-    assertEvidenceParity(cli, mcp, path);
+    assertEvidenceParity(cli, mcp, input);
     const report = mcp.normalized_result;
     assert.equal(
       report.tool_profile.timeout_ms,
@@ -434,7 +450,7 @@ try {
         ({ evidence_id }) => evidence_id === partial.evidence_id,
       );
       assert.ok(failed, "Retained failed WASM Evidence missing from bundle");
-      assert.equal(failed.subject.digest.sha256, sha256(invalidBytes));
+      assert.equal(failed.subject.identity.sha256, sha256(invalidBytes));
       assert.equal(
         failed.normalized_result.tool_profile.timeout_ms,
         invalidInput.command_timeout_ms ?? 30_000,
@@ -521,11 +537,14 @@ try {
     });
     assert.notEqual(reply.isError, true, mcpTextValue(reply));
     assert.ok(
-      ajv.validate(advertised.outputSchema, reply.structuredContent),
+      ajv.validate(
+        canonicalOutputSchema(advertised.name),
+        reply.structuredContent,
+      ),
       JSON.stringify(ajv.errors),
     );
     const mcp = parseEvidence(requireMcpOutput(reply, "inspect_wasm_artifact"));
-    assertEvidenceParity(cli, mcp, path);
+    assertEvidenceParity(cli, mcp, input);
     const report = mcp.normalized_result;
     assert.equal(report.validation, "valid");
     assert.equal(report.artifact.sha256, sha256(original));
@@ -587,11 +606,14 @@ try {
     });
     assert.notEqual(reply.isError, true, mcpTextValue(reply));
     assert.ok(
-      ajv.validate(advertised.outputSchema, reply.structuredContent),
+      ajv.validate(
+        canonicalOutputSchema(advertised.name),
+        reply.structuredContent,
+      ),
       JSON.stringify(ajv.errors),
     );
     const mcp = parseEvidence(requireMcpOutput(reply, "inspect_wasm_artifact"));
-    assertEvidenceParity(cli, mcp, path);
+    assertEvidenceParity(cli, mcp, input);
     const report = mcp.normalized_result;
     assert.equal(report.artifact.sha256, sha256(original));
     assert.equal(report.debug_name_metadata, "unknown");

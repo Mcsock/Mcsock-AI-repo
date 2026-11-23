@@ -3,31 +3,35 @@ import {
   pythonPycSchema,
 } from "../../domain/python/pythonPyc.js";
 import type { ToolContract } from "../toolContractTypes.js";
-import { toolContractMetadata } from "../toolEffects.js";
+import { toolContractMetadata, evidenceEffects } from "../toolEffects.js";
 import { analysisDetailOutputSchemaOf } from "../analysisDetail.js";
 import { z } from "zod";
 import {
-  pythonPycSummaryViewResultSchema,
   pythonPycCodeObjectsViewResultSchema,
-} from "../../domain/analysisView/analysisViewResult.js";
+  pythonPycSummaryViewResultSchema,
+} from "../../domain/analysisView/summarySchemas/pythonPycSummarySchemas.js";
 import {
   pythonPycCompleteDeliveryShape,
   pythonPycSummaryDeliveryShape,
 } from "../../domain/analysisView/pythonPycView.js";
+import { presentRootDiscriminator } from "../../domain/schemaAnnotations.js";
 
 /** Delivery selection does not change provider inputs or complete Evidence identity. */
-export const inspectPythonPycRequestSchema = z
-  .discriminatedUnion("detail", [
+export const inspectPythonPycRequestSchema = presentRootDiscriminator(
+  z.discriminatedUnion("detail", [
     inspectPythonPycInputSchema.extend(pythonPycCompleteDeliveryShape),
     inspectPythonPycInputSchema.extend(pythonPycSummaryDeliveryShape),
-  ])
-  .meta({ "x-rea-root-discriminator": "detail" });
+  ]),
+  "detail",
+);
 
 /** Static CPython pyc inspection is independent of active native-analysis providers. */
 export const PYTHON_PYC_TOOL_CONTRACTS = [
   {
     name: "inspect_python_pyc",
-    ...toolContractMetadata("inspect_python_pyc"),
+    availability: "standalone",
+    cli: true,
+    ...toolContractMetadata("inspect_python_pyc", evidenceEffects),
     kind: "artifact-provider",
     requiresActiveTarget: true,
     description:

@@ -1,4 +1,8 @@
 import {
+  canonicalOutputSchema,
+  withCanonicalOutputSchema,
+} from "./canonicalOutputSchema.js";
+import {
   Client,
   type CallToolRequestOptions,
   type ClientOptions,
@@ -11,6 +15,7 @@ import { closeVerifierResources } from "../../scripts/lib/verifier-cleanup.mjs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, onTestFinished } from "vitest";
 import { createMcpSchemaValidation } from "./mcpSchemaValidation.js";
+import { createSharedMcpSession } from "../support/mcp/sharedMcpSession.js";
 
 /** Default to native tools while preserving explicit caller configuration. */
 export const localToolsMcpEnvironment = (
@@ -20,8 +25,6 @@ export const localToolsMcpEnvironment = (
   REA_LOG_LEVEL: "silent",
   HOPPER_LAUNCHER_PATH: "/rea-unconfigured-deep-provider/hopper",
   GHIDRA_INSTALL_DIR: process.execPath,
-  // Validate each result against its complete advertised output contract.
-  REA_MCP_OUTPUT_SCHEMA_PROFILE: "full",
   ...environment,
 });
 
@@ -57,8 +60,12 @@ export async function connectLocalToolsMcp(
   await client.connect(transport);
   const tools = (await client.listTools()).tools;
   // Catalog dialect/reference validity belongs to toolSchemaValidity and the
-  // compact-profile catalog tests. SDK callTool validates each successful reply.
-  const definitions = new Map(tools.map((tool) => [tool.name, tool]));
+  // compact-profile catalog tests.
+  // tools/list omits output schemas by default; bind each definition to its
+  // canonical output contract so the SDK client validates successful replies.
+  const definitions = new Map(
+    tools.map((tool) => [tool.name, withCanonicalOutputSchema(tool)]),
+  );
   const call = async (
     name: string,
     arguments_: Record<string, unknown>,
@@ -73,11 +80,11 @@ export async function connectLocalToolsMcp(
       },
     );
     // The SDK skips error payloads. A caller-supplied validator also retains
-    // the fixture's independent advertised-schema assertion.
+    // the fixture's independent canonical-schema assertion.
     if (
       (response.isError === true || jsonSchemaValidator !== undefined) &&
       response.structuredContent !== undefined &&
-      definition?.outputSchema !== undefined
+      definition !== undefined
     ) {
       expect(
         validation.assertions.validate(
@@ -91,6 +98,24 @@ export async function connectLocalToolsMcp(
   };
   return { client, call };
 }
+
+/**
+ * Lazy file-scoped production stdio MCP client. Connects on first use so
+ * skipped files pay zero startup cost, sharing `createSharedMcpSession`'s
+ * retryable cleanup queue and handshake-failure attribution.
+ */
+export const lazyLocalToolsMcp = (
+  environment: Readonly<Record<string, string>> = {},
+): (() => Promise<Awaited<ReturnType<typeof connectLocalToolsMcp>>>) => {
+  const { session, close } = createSharedMcpSession(
+    async (registerCleanup, isClosed) => {
+      if (isClosed()) throw new Error("Shared MCP session is closed");
+      return connectLocalToolsMcp(environment, registerCleanup);
+    },
+  );
+  afterAll(() => close());
+  return () => session.call();
+};
 
 /**
  * One production stdio MCP client for the calling test file. It connects
@@ -118,6 +143,11 @@ export const fileLocalToolsMcp = (
       if (connected === undefined)
         throw new Error("The file's MCP client is not connected");
       return connected.client;
+    },
+    get call() {
+      if (connected === undefined)
+        throw new Error("The file's MCP client is not connected");
+      return connected.call;
     },
   };
 };

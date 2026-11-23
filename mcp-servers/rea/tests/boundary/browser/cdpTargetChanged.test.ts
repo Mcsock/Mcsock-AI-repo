@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { CdpBrowserProvider } from "../../../src/browser/CdpBrowserProvider.js";
 import { inspectWebPageInputSchema } from "../../../src/domain/browserObservation.js";
+import type { BrowserObservationFailureReason } from "../../../src/domain/browserObservationErrors.js";
 import { captureWebScreenshotInputSchema } from "../../../src/domain/webScreenshot.js";
 import { discoverWebMcpToolsInputSchema } from "../../../src/domain/webMcpDiscovery.js";
+import { observeWebSessionInputSchema } from "../../../src/domain/browserSession.js";
+import { inspectWebEventListenersInputSchema } from "../../../src/domain/webEventListeners.js";
+import { CdpWebRuntimeProvider } from "../../../src/browser/execution/CdpWebRuntimeProvider.js";
+import { startRuntimeBrowser } from "../../fixtures/webRuntime.js";
 import {
   startFakeCdpBrowser,
   type FakeOptions,
@@ -16,7 +21,7 @@ import { frameNavigated, trackBrowser } from "./cdpBrowserProvider.support.js";
  */
 interface Document {
   readonly id?: string;
-  readonly loaderId?: string;
+  readonly loaderId?: string | undefined;
   readonly path?: string;
   readonly url?: string;
 }
@@ -68,7 +73,7 @@ const known: Document = { loaderId: "loader-main" };
  * A refusal reason, or a completed result whose document was proven
  * (`verified`) or left unproven with limited coverage (`limited`).
  */
-type Outcome = "verified" | "limited" | string;
+type Outcome = "verified" | "limited" | BrowserObservationFailureReason;
 
 const expectOutcome = (
   result:
@@ -76,15 +81,15 @@ const expectOutcome = (
     | Awaited<ReturnType<CdpBrowserProvider["discoverWebMcpTools"]>>
     | Awaited<ReturnType<CdpBrowserProvider["captureScreenshot"]>>,
   outcome: Outcome,
-  section: string,
+  section: "frames" | "webmcp_tools" | "screenshot",
 ) => {
   if (outcome !== "verified" && outcome !== "limited") {
     expect(result).toMatchObject({ ok: false, error: { reason: outcome } });
     return;
   }
   if (!result.ok) throw result.error;
-  const limited = result.value.completeness.attach_limited_sections.includes(
-    section as never,
+  const limited = result.value.completeness.attach_limited_sections.some(
+    (value) => value === section,
   );
   expect(limited).toBe(outcome === "limited");
   expect(
@@ -139,12 +144,15 @@ describe("page capture", () => {
       after: { ...known, url: "https://outside.example/" },
       outcome: "target_not_allowed",
     },
-  ])("reports $name as $outcome", async ({ before, after, outcome }) => {
-    const result = await inspect({
-      commandResult: frameTrees(2, before ?? known, after),
-    });
-    expectOutcome(result, outcome, "frames");
-  });
+  ] as const)(
+    "reports $name as $outcome",
+    async ({ before, after, outcome }) => {
+      const result = await inspect({
+        commandResult: frameTrees(2, before ?? known, after),
+      });
+      expectOutcome(result, outcome, "frames");
+    },
+  );
 
   // Reads: 1 selects the document, 2 opens final capture, 3+ complete it.
   it.each([
@@ -279,13 +287,16 @@ describe("WebMCP discovery", () => {
       after: { loaderId: "loader-next", url: "https://outside.example/" },
       outcome: "target_changed",
     },
-  ])("reports $name as $outcome", async ({ before, after, outcome }) => {
-    const result = await discover({
-      commandResult: frameTrees(1, before ?? known, after),
-    });
-    expectOutcome(result, outcome, "webmcp_tools");
-    if (result.ok) expect(result.value.target.url).toMatch(/\/app$/u);
-  });
+  ] as const)(
+    "reports $name as $outcome",
+    async ({ before, after, outcome }) => {
+      const result = await discover({
+        commandResult: frameTrees(1, before ?? known, after),
+      });
+      expectOutcome(result, outcome, "webmcp_tools");
+      if (result.ok) expect(result.value.target.url).toMatch(/\/app$/u);
+    },
+  );
 });
 
 describe("screenshot capture", () => {
@@ -305,7 +316,7 @@ describe("screenshot capture", () => {
       after: { ...known, path: "/next" },
       outcome: "target_changed",
     },
-  ])("reports $name as $outcome", async ({ after, outcome }) => {
+  ] as const)("reports $name as $outcome", async ({ after, outcome }) => {
     const browser = await start({
       commandResult: frameTrees(1, known, after),
     });
@@ -321,8 +332,9 @@ describe("screenshot capture", () => {
 
   it("reports a navigation that fails the screenshot command as target_changed", async () => {
     const browser = await start({
+      eventsBeforeReply: ["Page.captureScreenshot"],
       commandEvents: (command, origin) =>
-        command.method === "Page.getLayoutMetrics"
+        command.method === "Page.captureScreenshot"
           ? [
               frameNavigated(command, {
                 id: "frame-main",
@@ -344,7 +356,225 @@ describe("screenshot capture", () => {
       }),
     );
     if (result.ok) throw new Error("Expected target_changed");
-    expect(result.error).toMatchObject({ reason: "target_changed" });
-    expect(result.error.cause).toBeDefined();
+    expect(result.error).toMatchObject({
+      reason: "target_changed",
+      cause: {
+        reason: "protocol_error",
+        command: "Page.captureScreenshot",
+        code: -32_000,
+        reportedMessage: "Target navigated",
+      },
+    });
+  });
+});
+
+/**
+ * Root navigation events reach every consumer through the target session's
+ * document owner, so the same event means the same thing to each of them.
+ * The `emits` command carries the event while the operation is running.
+ */
+type RootEvent = (
+  command: Parameters<NonNullable<FakeOptions["commandEvents"]>>[0],
+  origin: string,
+) => NonNullable<ReturnType<NonNullable<FakeOptions["commandEvents"]>>>[number];
+const rootEvents = {
+  "a malformed loader on the selected frame": (command, origin) =>
+    frameNavigated(command, {
+      id: "frame-main",
+      loaderId: 7,
+      url: `${origin}/app`,
+    }),
+  "a malformed loader on a replacement root frame": (command, origin) =>
+    frameNavigated(command, {
+      id: "frame-next",
+      loaderId: 7,
+      url: `${origin}/app`,
+    }),
+  "a same-document move to another origin": (command) => ({
+    method: "Page.navigatedWithinDocument",
+    ...(command.sessionId === undefined
+      ? {}
+      : { sessionId: command.sessionId }),
+    params: { frameId: "frame-main", url: "https://outside.example/" },
+  }),
+} satisfies Record<string, RootEvent>;
+const runWithRootEvent = async (
+  consumer: "page capture" | "screenshot",
+  event: RootEvent,
+) => {
+  const emits =
+    consumer === "page capture" ? "Network.enable" : "Page.getLayoutMetrics";
+  const browser = await start({
+    eventsBeforeReply: [emits],
+    commandResult: frameTrees(99, known, known),
+    commandEvents: (command, origin) =>
+      command.method === emits ? [event(command, origin)] : undefined,
+  });
+  const input = {
+    cdp_endpoint: browser.endpoint,
+    allowed_origins: [browser.allowedOrigin],
+    target_id: "allowed-page",
+  };
+  return consumer === "page capture"
+    ? await new CdpBrowserProvider().inspectPage(
+        inspectWebPageInputSchema.parse({ ...input, observation_ms: 0 }),
+      )
+    : await new CdpBrowserProvider().captureScreenshot(
+        captureWebScreenshotInputSchema.parse(input),
+      );
+};
+
+describe("root navigation events through the target session's document owner", () => {
+  // Before the owner, page capture ignored same-document events and reported
+  // a replacement root with a malformed loader as protocol_error; screenshot
+  // reported a malformed loader on its own frame as target_changed.
+  const transitions = [
+    ["a malformed loader on the selected frame", "protocol_error"],
+    ["a malformed loader on a replacement root frame", "target_changed"],
+    ["a same-document move to another origin", "target_not_allowed"],
+  ] as const;
+  it.each(
+    (["page capture", "screenshot"] as const).flatMap((consumer) =>
+      transitions.map(([name, reason]) => ({ consumer, name, reason })),
+    ),
+  )(
+    "$consumer reports $name as $reason",
+    async ({ consumer, name, reason }) => {
+      const result = await runWithRootEvent(consumer, rootEvents[name]);
+      expect(result).toMatchObject({ ok: false, error: { reason } });
+    },
+  );
+
+  it.each([
+    {
+      name: "a replacement reported only by the event",
+      initial: "document-1",
+      commit: "document-next",
+      changed: true,
+    },
+    {
+      name: "a duplicate commit",
+      initial: "document-1",
+      commit: "document-1",
+      changed: false,
+    },
+    {
+      name: "a first loader after a loaderless selection",
+      initial: undefined,
+      commit: "document-next",
+      changed: true,
+    },
+  ] as const)(
+    "runtime listener inspection handles $name",
+    async ({ initial, commit, changed }) => {
+      let committed = false;
+      const browser = await startRuntimeBrowser({
+        eventsBeforeReply: ["DOM.getDocument"],
+        commandResult: ({ method }, origin) =>
+          method === "Page.getFrameTree"
+            ? frameTree(origin, {
+                id: "runtime-main",
+                loaderId: initial ?? (committed ? commit : undefined),
+              })
+            : undefined,
+        commandEvents: (command, origin) => {
+          if (command.method !== "DOM.getDocument") return undefined;
+          committed = true;
+          return [
+            frameNavigated(command, {
+              id: "runtime-main",
+              loaderId: commit,
+              url: `${origin}/app`,
+            }),
+          ];
+        },
+      });
+      trackBrowser(browser);
+      const provider = new CdpWebRuntimeProvider();
+      try {
+        const result = await provider.inspectEventListeners(
+          inspectWebEventListenersInputSchema.parse({
+            cdp_endpoint: browser.endpoint,
+            allowed_origins: [browser.allowedOrigin],
+            target_id: "allowed-page",
+            selector: "#selected",
+          }),
+        );
+        expect(committed).toBe(true);
+        if (changed) {
+          expect(result).toMatchObject({
+            ok: false,
+            error: { reason: "target_changed" },
+          });
+        } else {
+          if (!result.ok) throw result.error;
+          expect(result.value).toMatchObject({
+            selected_node: { selector: "#selected", match: "found" },
+            listeners: [{ type: "click", execution: "unknown" }],
+            cleanup: "confirmed",
+          });
+        }
+      } finally {
+        await provider.close();
+      }
+    },
+  );
+});
+
+describe("observation window replay", () => {
+  // The observation window replays events buffered before its clock sample;
+  // each is scoped by the root frame it arrived under, not by a root
+  // replacement received after it.
+  it("observation scopes buffered rows by the root frame each arrived under", async () => {
+    const withinDocument = (
+      command: Parameters<NonNullable<FakeOptions["commandEvents"]>>[0],
+      frameId: string,
+      url: string,
+    ) => ({
+      method: "Page.navigatedWithinDocument",
+      ...(command.sessionId === undefined
+        ? {}
+        : { sessionId: command.sessionId }),
+      params: { frameId, url, navigationType: "historyApi" },
+    });
+    const browser = await start({
+      eventsBeforeReply: ["Performance.getMetrics"],
+      commandResult: (command) => {
+        if (command.method === "Performance.enable") return {};
+        if (command.method === "Performance.getMetrics")
+          return { metrics: [{ name: "Timestamp", value: 20 }] };
+        return undefined;
+      },
+      commandEvents: (command, origin) =>
+        command.method === "Performance.getMetrics"
+          ? [
+              withinDocument(command, "frame-main", `${origin}/app#before`),
+              frameNavigated(command, {
+                id: "frame-next",
+                loaderId: "loader-next",
+                url: `${origin}/next`,
+              }),
+              withinDocument(command, "frame-main", `${origin}/app#stale`),
+              withinDocument(command, "frame-next", `${origin}/next#after`),
+            ]
+          : undefined,
+    });
+    const result = await new CdpBrowserProvider().observeSession(
+      observeWebSessionInputSchema.parse({
+        cdp_endpoint: browser.endpoint,
+        allowed_origins: [browser.allowedOrigin],
+        target_id: "allowed-page",
+        observation_ms: 1,
+      }),
+    );
+    if (!result.ok) throw result.error;
+    expect(
+      result.value.timeline
+        .filter((row) => row.type === "same_document_navigation")
+        .map((row) => [row.frame_id, row.url]),
+    ).toEqual([
+      ["frame-main", `${browser.allowedOrigin}/app#before`],
+      ["frame-next", `${browser.allowedOrigin}/next#after`],
+    ]);
   });
 });

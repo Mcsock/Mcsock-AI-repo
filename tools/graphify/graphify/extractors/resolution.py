@@ -1029,6 +1029,48 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+
+_HTML_SCRIPT_TAG_RE = re.compile(
+    r"<script\b((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>([\s\S]*?)</script\s*>",
+    re.IGNORECASE,
+)
+_NON_JS_SCRIPT_TYPE_RE = re.compile(
+    r"""\btype\s*=\s*["']?(?!module\b|text/javascript\b|application/javascript\b)""",
+    re.IGNORECASE,
+)
+
+
+def _svelte_mask_non_script(src: str) -> tuple[str, str | None]:
+    """Blank everything in a ``.svelte`` file except JS ``<script>`` bodies.
+
+    Every character outside those bodies becomes a space (``\\r``/``\\n`` are
+    kept), so AST locations match the original file. Scripts with a non-JS
+    ``type`` (``application/ld+json`` and the like) are blanked too: their
+    bodies are not statements and would only add parse errors. Returns
+    ``(masked_source, lang)``; ``lang`` is the first JS block's declared
+    ``lang``. Mirrors :func:`_astro_mask_non_script`.
+    """
+    chars = [c if c in "\r\n" else " " for c in src]
+    lang: str | None = None
+    for m in _HTML_SCRIPT_TAG_RE.finditer(src):
+        if _NON_JS_SCRIPT_TYPE_RE.search(m.group(1)):
+            continue
+        start, end = m.start(2), m.end(2)
+        chars[start:end] = src[start:end]
+        # Terminate the region in place of the closing `</script`, so two scripts
+        # on one line don't run together. U+2028 is a JS line terminator, so it
+        # ends a trailing `//` comment that would otherwise swallow the next
+        # block; the `;` after it then ends the statement (inside the comment it
+        # would be inert). U+2028 is not a newline, so line numbers hold, and its
+        # 3 UTF-8 bytes replace 3 ASCII ones, so byte offsets do too.
+        chars[end:end + 4] = ["\u2028", ";", "", ""]
+        if lang is None:
+            lang_m = _VUE_SCRIPT_LANG_RE.search(m.group(1))
+            if lang_m:
+                lang = lang_m.group(1).lower()
+    return "".join(chars), lang
+
+
 def _memo_cwd(path_str: str) -> str:
     """The cwd part of a path-memo key: empty for an absolute path (#perf).
 
@@ -1154,23 +1196,24 @@ def _disambiguate_colliding_node_ids(
         if len(candidates) == 1:
             unambiguous_remaps[old_id] = next(iter(candidates))
 
-    # A C/ObjC/C++ `#include "foo.h"` / `#import "foo.h"` resolves to the header's
-    # file node, but `foo.h` and its sibling `foo.c`/`foo.m`/`foo.cpp` collapse to
-    # the same `foo` file id, so disambiguation salts them apart by path. A
-    # cross-file import edge from a THIRD file carries neither salt's source_key, so
-    # the (target, edge_source_key) lookup misses and the edge dangles on the now
-    # dead `foo` id. Repoint those import edges to the HEADER variant (the include
-    # always targeted the header), keyed by the original colliding id (#1475).
-    _HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
+    # #1475: an unhinted native include targets the header variant, even
+    # when its own implementation file has the same original ID.
+    from graphify.extract import _lang_family
+
+    header_suffixes = {".h", ".hpp", ".hh", ".hxx"}
     header_remaps: dict[str, str] = {}
+    file_remaps: dict[tuple[str, str], set[str]] = {}
     for old_id in ambiguous_ids:
-        for node in by_id.get(old_id, []):
-            sk = _node_disambiguation_source_key(node, root)
-            if sk and Path(sk).suffix.lower() in _HEADER_SUFFIXES:
-                new_id = remap.get((old_id, sk))
-                if new_id:
-                    header_remaps[old_id] = new_id
-                    break
+        for node in by_id[old_id]:
+            source = _node_disambiguation_source_key(node, root)
+            new_id = remap.get((old_id, source))
+            if not source or not new_id:
+                continue
+            if Path(source).suffix.lower() in header_suffixes:
+                header_remaps.setdefault(old_id, new_id)
+            family = _lang_family(source)
+            if family and node.get("label") == Path(source).name:
+                file_remaps.setdefault((old_id, family), set()).add(new_id)
 
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
@@ -1193,14 +1236,16 @@ def _disambiguate_colliding_node_ids(
             edge["source"] = remap[source_key]
         elif edge.get("source") in unambiguous_remaps:
             edge["source"] = unambiguous_remaps[str(edge["source"])]
-        # imports/imports_from always target a header file, so they must resolve to
-        # the header variant BEFORE the same-source-file salt is considered. Keying
-        # the import target by the importer's own source file mis-points a `.m`
-        # importing its own `.h` back at itself (self-loop), and is wrong for any
-        # cross-file import whose importer shares the colliding id (#1475).
-        if (edge.get("relation") in ("imports", "imports_from")
-                and edge.get("target") in header_remaps):
-            edge["target"] = header_remaps[str(edge["target"])]
+        target = str(edge.get("target", ""))
+        if (not target_file and target in header_remaps
+                and edge.get("relation") in ("imports", "imports_from")):
+            family = _lang_family(edge_source_key)
+            if family == "native" or effective_suffix(edge_source_key) in header_suffixes:
+                edge["target"] = header_remaps[target]
+            elif family:
+                candidates = file_remaps.get((target, family), set())
+                if len(candidates) == 1:
+                    edge["target"] = next(iter(candidates))
         elif target_key in remap:
             edge["target"] = remap[target_key]
         elif edge.get("target") in unambiguous_remaps:
@@ -2023,20 +2068,17 @@ def _apply_symbol_resolution_facts(
 def _parse_js_tree(path: Path):
     try:
         from tree_sitter import Language, Parser
-        # .vue embeds the script in non-JS markup; mask it out and parse the
-        # <script> with TS.
-        vue_lang: str | None = None
-        if effective_suffix(path) == ".vue":
-            masked, vue_lang = _vue_mask_non_script(
-                _read_source_text(path, warn=False)
-            )
+        suffix = effective_suffix(path)
+        if suffix in (".vue", ".svelte"):
+            # Blank component markup before parsing the script bodies.
+            mask = _vue_mask_non_script if suffix == ".vue" else _svelte_mask_non_script
+            masked, lang = mask(_read_source_text(path, warn=False))
             source = masked.encode("utf-8")
+            use_ts = lang not in ("js", "jsx")
         else:
             source = _read_source_bytes(path, warn=False)
-        use_ts = effective_suffix(path) in (".ts", ".mts", ".cts") or (
-            effective_suffix(path) == ".vue" and vue_lang not in ("js", "jsx")
-        )
-        if effective_suffix(path) == ".tsx":
+            use_ts = suffix in (".ts", ".mts", ".cts")
+        if suffix == ".tsx":
             # .tsx must use the JSX-aware TSX grammar, mirroring the engine's
             # _TSX_CONFIG (ts_language_fn="language_tsx"). Parsing .tsx with
             # language_typescript misparses JSX, and tree-sitter's error
@@ -2947,30 +2989,22 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             _ts_walk_class_members(node, source, path, class_nid, member_facts)
     facts.uses.extend(member_facts.uses)
 
-@functools.lru_cache(maxsize=2048)
-def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
-    import tree_sitter_python as tspython
-    from tree_sitter import Language, Parser
-    source = _read_source_bytes(Path(path_str), warn=False)
-    parser = Parser(Language(tspython.language()))
-    return source, parser.parse(source).root_node
-
-
 def _parse_python_tree(path: Path):
-    """Parse one Python file to ``(source, root_node)``, memoized (#perf).
+    """Parse one Python file to ``(source, root_node)``, or ``None`` on any error.
 
-    The Python symbol-resolution facts pass and the cross-file import pass each
-    parse the entire ``.py`` corpus, back to back, from the main process after
-    the workers return — so every file was tree-sitter-parsed (and read from
-    disk) twice for no reason. Keying the memo on ``(path, mtime_ns, size)``
-    lets the second pass reuse the first pass's tree while still re-parsing a
-    file that changed between runs (watch mode). Both passes only read the
-    tree, so sharing one parse is behaviour-preserving. Returns ``None`` on any
-    error, exactly as before — callers already treat that as "skip this file".
+    Not memoized. Each resolution pass parses a file, walks it, and drops it
+    before the next file, so only one tree is alive at a time. A shared memo
+    (#3502) pinned up to 2,048 trees plus their cached ``Node`` wrappers
+    (~775 MB on django) and still missed on every file of a corpus with more
+    than 2,048 ``.py`` files, because the second pass walks in the same order
+    as the first.
     """
     try:
-        st = path.stat()
-        return _parse_python_tree_cached(str(path), st.st_mtime_ns, st.st_size)
+        import tree_sitter_python as tspython
+        from tree_sitter import Language, Parser
+        source = _read_source_bytes(path, warn=False)
+        parser = Parser(Language(tspython.language()))
+        return source, parser.parse(source).root_node
     except Exception:
         return None
 
@@ -3021,7 +3055,7 @@ def _python_imported_names(node, source: bytes) -> list[tuple[str, str]]:
             continue
         if child.type == "dotted_name":
             name = _read_text(child, source)
-            names.append((name, name.split(".")[-1]))
+            names.append((name, name.split(".")[0 if node.type == "import_statement" else -1]))
         elif child.type == "aliased_import":
             name_node = child.child_by_field_name("name")
             alias_node = child.child_by_field_name("alias")
@@ -3164,6 +3198,43 @@ _PYTHON_STDLIB_MODULE_NAMES = frozenset({
 })
 
 
+# C and C++ standard library header names as written in an angle include
+# (`<functional>`, `<stdio.h>`, `<cstdio>`). An unresolved angle include of one
+# of these must not bind to a same-named project header through the bare-stem
+# alias index, mirroring _PYTHON_STDLIB_MODULE_NAMES for `import logging`
+# (#4261, #5218).
+_C_STD_HEADERS = frozenset({
+    "assert.h", "complex.h", "ctype.h", "errno.h", "fenv.h", "float.h",
+    "inttypes.h", "iso646.h", "limits.h", "locale.h", "math.h", "setjmp.h",
+    "signal.h", "stdalign.h", "stdarg.h", "stdatomic.h", "stdbit.h", "stdbool.h",
+    "stdckdint.h", "stddef.h", "stdint.h", "stdio.h", "stdlib.h", "stdnoreturn.h",
+    "string.h", "tgmath.h", "threads.h", "time.h", "uchar.h", "wchar.h", "wctype.h",
+})
+_CPP_STD_HEADERS = frozenset({
+    "algorithm", "any", "array", "atomic", "barrier", "bit", "bitset", "charconv",
+    "chrono", "codecvt", "compare", "complex", "concepts", "condition_variable",
+    "coroutine", "debugging", "deque", "exception", "execution", "expected",
+    "filesystem", "flat_map", "flat_set", "format", "forward_list", "fstream",
+    "functional", "future", "generator", "hazard_pointer", "initializer_list",
+    "inplace_vector", "iomanip", "ios", "iosfwd", "iostream", "istream", "iterator",
+    "latch", "limits", "linalg", "list", "locale", "map", "mdspan", "memory",
+    "memory_resource", "mutex", "new", "numbers", "numeric", "optional", "ostream",
+    "print", "queue", "random", "ranges", "ratio", "rcu", "regex", "scoped_allocator",
+    "semaphore", "set", "shared_mutex", "simd", "source_location", "span",
+    "spanstream", "sstream", "stack", "stacktrace", "stdexcept", "stdfloat",
+    "stop_token", "streambuf", "string", "string_view", "strstream", "syncstream",
+    "system_error", "text_encoding", "thread", "tuple", "type_traits", "typeindex",
+    "typeinfo", "unordered_map", "unordered_set", "utility", "valarray", "variant",
+    "vector", "version",
+    # <cxxx> forms of the C headers.
+    "cassert", "ccomplex", "cctype", "cerrno", "cfenv", "cfloat", "cinttypes",
+    "ciso646", "climits", "clocale", "cmath", "csetjmp", "csignal", "cstdalign",
+    "cstdarg", "cstdbool", "cstddef", "cstdint", "cstdio", "cstdlib", "cstring",
+    "ctgmath", "ctime", "cuchar", "cwchar", "cwctype",
+})
+C_STANDARD_INCLUDE_NAMES = _C_STD_HEADERS | _CPP_STD_HEADERS
+
+
 def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
     if level > 0:
         base = current_path.parent
@@ -3294,21 +3365,45 @@ def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Pa
     return None
 
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
-    """``(plain caller id, body)`` for every top-level ``def`` in the module.
+    """``(plain caller id, body)`` for every top-level ``def`` and every method of
+    a top-level class, decorated or not.
+
+    A decorated definition is wrapped in a ``decorated_definition`` node, and a
+    method lives in its class body; skipping either dropped every aliased import
+    call made there (``from m import f as g`` then ``g()``), which only these
+    facts can resolve because the bare-name pass never matches ``g`` to ``f``.
 
     Deliberately the *unsalted* id: ``_apply_symbol_resolution_facts`` resolves
     the caller against the final graph, where the underscore-collision spread
     (#3302) is baked into the ids.
     """
+    def definition(node):
+        if node.type == "decorated_definition":
+            return node.child_by_field_name("definition")
+        return node
+
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
-    for node in root_node.children:
-        if node.type != "function_definition":
+    for top in root_node.children:
+        node = definition(top)
+        if node is None:
             continue
         name_node = node.child_by_field_name("name")
         body = node.child_by_field_name("body")
-        if name_node is not None and body is not None:
-            bodies.append((_make_id(stem, _read_text(name_node, source)), body))
+        if name_node is None or body is None:
+            continue
+        name = _read_text(name_node, source)
+        if node.type == "function_definition":
+            bodies.append((_make_id(stem, name), body))
+        elif node.type == "class_definition":
+            for member in body.children:
+                method = definition(member)
+                if method is None or method.type != "function_definition":
+                    continue
+                method_name = method.child_by_field_name("name")
+                method_body = method.child_by_field_name("body")
+                if method_name is not None and method_body is not None:
+                    bodies.append((_make_id(stem, name, _read_text(method_name, source)), method_body))
     return bodies
 
 def _python_call_identifier(node, source: bytes) -> str | None:
@@ -3324,11 +3419,18 @@ def _collect_python_symbol_resolution_facts(
     root: Path,
     facts: _SymbolResolutionFacts,
     ambiguous_python_modules: set[str] | None = None,
+    raw_calls: list[dict] | None = None,
 ) -> None:
     ambiguous_python_modules = ambiguous_python_modules or set()
     py_paths = [path for path in paths if effective_suffix(path) == ".py"]
     if not py_paths:
         return
+
+    calls_by_file: dict[Path, list[dict]] = {}
+    for call in raw_calls or []:
+        source_file = call.get("source_file")
+        if source_file and not call.get("is_member_call") and not call.get("indirect"):
+            calls_by_file.setdefault(_resolve_cached(source_file), []).append(call)
 
     # One parse per file, dropped before the next (the same reason as the JS facts above).
     for path in py_paths:
@@ -3336,8 +3438,19 @@ def _collect_python_symbol_resolution_facts(
         if parsed is None:
             continue
         source, root_node = parsed
+        imported_names: dict[str, tuple[str, str, str | None]] = {}
+        local_import_scopes: dict[str, list[tuple[int, int]]] = {}
 
         for node in _walk_python_tree(root_node):
+            if node.type in ("import_statement", "import_from_statement"):
+                scope = node.parent
+                while scope is not None and scope.type not in (
+                    "module", "function_definition", "class_definition", "lambda",
+                ):
+                    scope = scope.parent
+                if scope is not None and scope.type == "function_definition":
+                    for _, local in _python_imported_names(node, source):
+                        local_import_scopes.setdefault(local, []).append((scope.start_byte, scope.end_byte))
             if node.type != "import_from_statement":
                 continue
             module = _python_import_from_module(node, source)
@@ -3347,6 +3460,12 @@ def _collect_python_symbol_resolution_facts(
             if level == 0 and _make_id(module_name) in ambiguous_python_modules:
                 continue
             target_path = _resolve_python_module_path(module_name, path, root, level)
+            if node.parent is not None and node.parent.type == "module":
+                for imported, local in _python_imported_names(node, source):
+                    imported_names[local] = (
+                        imported, module_name if level == 0 else "",
+                        str(target_path) if target_path is not None else None,
+                    )
             if target_path is not None:
                 # #1146: `from pkg import submod` — if the target is a package
                 # (__init__.py) and an imported name matches a submodule file on
@@ -3402,6 +3521,20 @@ def _collect_python_symbol_resolution_facts(
                         )
                     )
 
+        # Constrain direct-call fallback to the explicitly imported name and
+        # module, including imports the fact resolver could not resolve (#5229).
+        # Only unconditional top-level imports apply file-wide. For explicitly
+        # supplied files outside the scan root, failure to resolve a module does
+        # not establish that it is external; retain their existing fallback.
+        if _resolve_cached(path).is_relative_to(_resolve_cached(root)):
+            for call in calls_by_file.get(_resolve_cached(path), []):
+                if call.get("callee") in imported_names:
+                    scopes = local_import_scopes.get(call["callee"], ())
+                    site = call.get("_python_call_site")
+                    if scopes and (not site or any(start <= site[0] < end for start, end in scopes)):
+                        continue  # A nearer import shadows the module binding.
+                    call["_python_import_binding"] = imported_names[call["callee"]]
+
         for source_id, body in _python_top_level_function_bodies(path, root_node, source):
             for node in _walk_python_tree(body):
                 imported_name = _python_call_identifier(node, source)
@@ -3432,6 +3565,7 @@ def _augment_symbol_resolution_edges(
     _collect_python_symbol_resolution_facts(
         paths, root, facts,
         ambiguous_python_modules=ambiguous_python_modules,
+        raw_calls=raw_calls,
     )
     if resolution_context_nodes:
         _apply_symbol_resolution_facts(
@@ -3543,8 +3677,7 @@ def _resolve_cross_file_imports(
         if not name_to_nid:
             continue
 
-        # Parse imports from this file (shared with the facts pass via the
-        # mtime-keyed memo, so each .py is parsed once across both passes).
+        # Parse imports from this file. The tree is dropped before the next file.
         parsed = _parse_python_tree(path)
         if parsed is None:
             continue
@@ -3734,7 +3867,13 @@ def _cpp_source_key(source_file: str | Path, root: Path) -> str:
     if not source_file:
         return ""
     try:
-        return os.path.relpath((root / source_file).resolve(), root.resolve()).replace("\\", "/")
+        path = (root / source_file).resolve()
+        try:
+            return os.path.relpath(path, root.resolve()).replace("\\", "/")
+        except ValueError:
+            # No relative path to a root on another Windows drive; the absolute
+            # path is still a distinct identity for the file.
+            return path.as_posix()
     except (OSError, RuntimeError, ValueError):
         return ""
 
@@ -3883,9 +4022,16 @@ def _merge_cpp_member_declarations(
             continue
         scope, name = qualified.rsplit("::", 1)
         classes = owners.get(scope, [])
-        if len(classes) != 1 or classes[0].get("_cpp_class_kind") != "definition":
+        # A plain forward declares no members, so one that
+        # _merge_cpp_forward_classes left unfolded (no include path to the
+        # definition) is not a rival owner. Any other kind beside the single
+        # definition (a second definition, a template or conditional class)
+        # keeps the scope uncertain.
+        definitions = [c for c in classes if c.get("_cpp_class_kind") == "definition"]
+        if len(definitions) != 1 or any(
+                c.get("_cpp_class_kind") not in {"forward", "definition"} for c in classes):
             continue
-        owner = classes[0]
+        owner = definitions[0]
         if any(len(n["_cpp_member_records"]) != 1
                or not n["_cpp_member_records"][0].get("signature")
                or (n.get("metadata") or {}).get("cpp_conditions") for n in group):
@@ -4123,11 +4269,29 @@ def _merge_decl_def_classes(
         if src == tgt:
             continue
         k = (src, tgt, e.get("relation"), e.get("context"))
+        if e.get("relation") == "calls":
+            # A repeat call site is not a merge twin; keep it for the build's `also_seen`.
+            k += (e.get("source_file"), e.get("source_location"))
         if k in seen_keys:
             continue
         seen_keys.add(k)
         rewritten.append(e)
     all_edges[:] = rewritten
+
+
+_GO_COMMENT_RE = re.compile(rb"//[^\n]*|/\*.*?\*/", re.DOTALL)
+_GO_PACKAGE_RE = re.compile(rb"^\s*package\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
+
+
+def _go_package_clause(path: Path) -> str | None:
+    """The package name a Go file's ``package`` clause declares, or None if unreadable."""
+    try:
+        source = _read_source_bytes(path, warn=False)
+    except Exception:
+        return None
+    m = _GO_PACKAGE_RE.search(_GO_COMMENT_RE.sub(b" ", source))
+    return m.group(1).decode("ascii") if m else None
+
 
 def _merge_go_package_types(
     all_nodes: list[dict],
@@ -4150,9 +4314,12 @@ def _merge_go_package_types(
       * Every node in the id-collision must be a ``.go`` file in ONE directory — Go's
         package unit. The id folds in only the directory's NAME, so ``a/svc`` and
         ``b/svc`` collide on id while being different packages; those stay split.
-      * Folding stops at a ``_test.go`` member, whose package clause may be the separate
-        ``svc_test`` package declaring a type of its own name. The clause is not parsed,
-        so same-directory is not evidence of same package there.
+      * A ``_test.go`` member folds only when its package clause names the same
+        package as the group's other files (#5209). An internal test file
+        (``package svc``) commonly adds test-only methods to a package type, while an
+        external test package (``package svc_test``) shares the directory but declares
+        types of its own; same-directory is not evidence of same package there, so a
+        clause that differs or cannot be read keeps the group split.
 
     No edge re-pointing is needed: the group already shares one id, so every edge
     already points at the survivor. The declaration site wins — the file holding
@@ -4187,7 +4354,9 @@ def _merge_go_package_types(
         if len({f.parent for f in files}) != 1:
             continue
         if any(f.name.endswith("_test.go") for f in files):
-            continue
+            clauses = {_go_package_clause(f) for f in files}
+            if len(clauses) != 1 or None in clauses:
+                continue
         # A type whose declaring file is outside the corpus leaves the whole group
         # method-only; one node is still the answer, so fold on the lowest path.
         declared = declaring_files.get(nid, set())
@@ -4200,6 +4369,34 @@ def _merge_go_package_types(
 
     if drop_objs:
         all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
+
+    # A file in ANOTHER package that names the type (`svc *alpha.Service` in a field,
+    # parameter or return type) mints a sourceless `alpha.Service` stub, and
+    # `_make_id` folds that label onto the very id the declaration carries
+    # (`alpha_service`). The stub's origin_file then makes
+    # `_disambiguate_colliding_node_ids` see two source paths and salt BOTH apart,
+    # so the declaration's id changes while the `method` edges a sibling file emitted
+    # (keyed by that sibling's own path, which is in neither salt) stay on the dead
+    # bare id, and every member call through the type is dropped (#5304). Move such a
+    # stub to an id of its own before that pass: it is still a qualified stub, so
+    # `_resolve_go_type_references` re-points its edges through the referencing
+    # file's import exactly as before; it just no longer collides with the
+    # declaration it may well resolve to.
+    stub_renames: dict[tuple[str, str], str] = {}
+    for n in all_nodes:
+        nid = n.get("id")
+        label = str(n.get("label", ""))
+        origin = str(n.get("origin_file", ""))
+        if (nid in by_id and not n.get("source_file") and "." in label
+                and Path(origin).suffix.lower() == ".go"):
+            new_id = _make_id("go", "ref", label)
+            stub_renames[(nid, origin)] = new_id
+            n["id"] = new_id
+    if stub_renames:
+        for e in all_edges:
+            renamed = stub_renames.get((str(e.get("target", "")), str(e.get("source_file", ""))))
+            if renamed:
+                e["target"] = renamed
 
 
 def _resolve_cross_file_java_imports(

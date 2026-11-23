@@ -14,7 +14,7 @@ import {pathToFileURL} from 'node:url';
 import sinon from 'sinon';
 
 import {UncaughtError} from '../src/collectors/PageCollector.js';
-import {ServiceWorkerConsoleCollector} from '../src/collectors/ServiceWorkerCollector.js';
+import {ExtensionItemStore} from '../src/collectors/ServiceWorkerCollector.js';
 import {NetworkFormatter} from '../src/formatters/NetworkFormatter.js';
 import {McpContext} from '../src/McpContext.js';
 import {McpPage} from '../src/McpPage.js';
@@ -28,7 +28,7 @@ import {
   ScreenRecorder,
   type Target,
   TargetType,
-} from '../src/third_party/index.js';
+} from '../src/third_party/browser.js';
 import {
   parseRawTraceBuffer,
   type TraceResult,
@@ -39,10 +39,12 @@ import {stableIdSymbol} from '../src/utils/id.js';
 
 import type {ServerConfig} from '../src/config/ServerConfig.js';
 import {
+  createMockHTTPRequest,
   createMockMcpWorker,
   createMockPuppeteerBrowser,
   createMockPuppeteerPage,
   createMockPuppeteerTarget,
+  createMockWebWorker,
   createMockServerConfig,
 } from './mocks.js';
 import {serverHooks, TestServer} from './server.js';
@@ -159,7 +161,7 @@ describe('McpContext', () => {
         ),
       ];
       const getData = sinon
-        .stub(ServiceWorkerConsoleCollector.prototype, 'getData')
+        .stub(ExtensionItemStore.prototype, 'getData')
         .returns(messages);
 
       const result = context.getServiceWorkerConsoleData('sw-3');
@@ -191,14 +193,13 @@ describe('McpContext', () => {
         getWorkerById
           .withArgs('shw-2')
           .returns(createMockMcpWorker({id: 'shw-2', type: 'shared_worker'}));
-        const getData = sinon.stub(
-          ServiceWorkerConsoleCollector.prototype,
-          'getData',
-        );
+        const getData = sinon.stub(ExtensionItemStore.prototype, 'getData');
 
         assert.throws(
           () => context.getServiceWorkerConsoleData(serviceWorkerId),
-          /Service worker not found\./,
+          new RegExp(
+            `Service worker ${serviceWorkerId} not found\\. Call list_pages to get the current sw-N IDs\\.`,
+          ),
         );
 
         sinon.assert.calledOnceWithExactly(getWorkerById, serviceWorkerId);
@@ -206,6 +207,91 @@ describe('McpContext', () => {
         context.dispose();
       });
     }
+  });
+
+  describe('getServiceWorkerConsoleMessageById', () => {
+    it('resolves the service worker ID to the collector extension ID', async () => {
+      const browser = createMockPuppeteerBrowser();
+      browser.targets.returns([]);
+      const context = await createConnectedMcpContext(
+        browser,
+        {
+          config: createMockServerConfig({
+            performanceCrux: false,
+          }),
+          heapSnapshotManager: new HeapSnapshotManager(new TaskRunner()),
+        },
+        Locator,
+      );
+      const worker = createMockMcpWorker({
+        id: 'sw-3',
+        url: 'chrome-extension://extension-id/background.js',
+      });
+      const getWorkerById = sinon
+        .stub(context, 'getWorkerById')
+        .returns(worker);
+      const message = Object.assign(
+        new UncaughtError(
+          {
+            exceptionId: 1,
+            text: 'Service worker error',
+            lineNumber: 0,
+            columnNumber: 0,
+          },
+          'extension-id',
+        ),
+        {[stableIdSymbol]: 2},
+      );
+      const getById = sinon
+        .stub(ExtensionItemStore.prototype, 'getById')
+        .returns(message);
+
+      const result = context.getServiceWorkerConsoleMessageById('sw-3', 2);
+
+      sinon.assert.calledOnceWithExactly(getWorkerById, 'sw-3');
+      sinon.assert.calledOnceWithExactly(getById, 'extension-id', 2);
+      assert.strictEqual(result, message);
+      context.dispose();
+    });
+  });
+
+  describe('service worker network data', () => {
+    it('returns requests emitted by the service worker', async () => {
+      const worker = createMockWebWorker();
+      const target = createMockPuppeteerTarget({
+        url: 'chrome-extension://extension-id/background.js',
+        type: TargetType.SERVICE_WORKER,
+      });
+      target.worker.resolves(worker);
+      const browser = createMockPuppeteerBrowser();
+      browser.targets.returns([target]);
+      const context = await createConnectedMcpContext(
+        browser,
+        {
+          config: createMockServerConfig({
+            performanceCrux: false,
+          }),
+          heapSnapshotManager: new HeapSnapshotManager(new TaskRunner()),
+        },
+        Locator,
+      );
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const [serviceWorker] = context.getWorkers();
+      assert.ok(serviceWorker);
+      const request = createMockHTTPRequest();
+
+      worker.emit('request', request);
+
+      assert.deepStrictEqual(
+        context.getServiceWorkerNetworkData(serviceWorker.id),
+        [request],
+      );
+      assert.strictEqual(
+        context.getServiceWorkerNetworkRequestById(serviceWorker.id, 1),
+        request,
+      );
+      context.dispose();
+    });
   });
   it('list pages', async () => {
     await withMcpContext(async (_response, context) => {
@@ -274,7 +360,7 @@ describe('McpContext', () => {
     });
   });
 
-  it('should should detect open DevTools pages', async () => {
+  it('should detect open DevTools pages', async () => {
     await withMcpContext(
       async (_response, context) => {
         const page = await context.newPage();

@@ -21,7 +21,9 @@ import { regexWorkerHeapRequestMiBSchema } from "./regexWorkerHeapRequest.js";
 import { captureDecoderOldGenerationMiBSchema } from "./captureDecoderHeap.js";
 import { capturePacketJsonExpansionBytesSchema } from "./capturePacketJsonExpansion.js";
 import { parseNativeMatchingAllowance } from "./nativeMatchingAllowance.js";
+import { javaScriptMemberMutationAliasStatesSchema } from "./javascriptMemberMutationAllowance.js";
 import { bridgeMaxRequestBytesSchema } from "./bridgeMaxRequestBytes.js";
+import { bridgeMaxReplyBytesSchema } from "./bridgeMaxReplyBytes.js";
 import {
   debuggerCommandDeadlineMsSchema,
   debuggerMaxCommandOutputBytesSchema,
@@ -31,7 +33,8 @@ import {
   windowsChangeTimeSettleMaxPollsSchema,
   windowsChangeTimeSettlePollMsSchema,
 } from "./windowsChangeTimeSettle.js";
-import { pwntoolsInputBytesSchema } from "../native/pwntools/PwntoolsInputLimit.js";
+import { pwntoolsInputBytesSchema } from "./pwntoolsInputLimit.js";
+import { zstandardMaxFramesSchema } from "../domain/compression/zstandardFrameAllowance.js";
 const environmentSchemas: Readonly<Record<string, z.ZodType<number, string>>> =
   {
     REA_ASAR_MAX_HEADER_BYTES: asarMaxHeaderBytesSchema,
@@ -50,7 +53,10 @@ const environmentSchemas: Readonly<Record<string, z.ZodType<number, string>>> =
       captureDecoderOldGenerationMiBSchema,
     REA_CAPTURE_PACKET_JSON_EXPANSION_BYTES:
       capturePacketJsonExpansionBytesSchema,
+    REA_JAVASCRIPT_MEMBER_MUTATION_ALIAS_STATES:
+      javaScriptMemberMutationAliasStatesSchema,
     REA_BRIDGE_MAX_REQUEST_BYTES: bridgeMaxRequestBytesSchema,
+    REA_BRIDGE_MAX_REPLY_BYTES: bridgeMaxReplyBytesSchema,
     REA_DEBUGGER_COMMAND_DEADLINE_MS: debuggerCommandDeadlineMsSchema,
     REA_DEBUGGER_MAX_COMMAND_OUTPUT_BYTES: debuggerMaxCommandOutputBytesSchema,
     REA_HOPPER_CALLER_SCAN_BUDGET_MS: providerStartupTimeoutSchema,
@@ -62,6 +68,7 @@ const environmentSchemas: Readonly<Record<string, z.ZodType<number, string>>> =
     REA_WINDOWS_CHANGE_TIME_SETTLE_POLL_MS: windowsChangeTimeSettlePollMsSchema,
     REA_WINDOWS_CHANGE_TIME_SETTLE_MAX_POLLS:
       windowsChangeTimeSettleMaxPollsSchema,
+    REA_ZSTD_MAX_FRAMES: zstandardMaxFramesSchema,
   };
 export const launchAnalysisSetting = (
   id: AnalysisSettingId,

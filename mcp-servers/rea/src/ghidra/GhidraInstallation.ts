@@ -1,9 +1,10 @@
 import { AnalysisError } from "../domain/analysisErrorBase.js";
+import { HOST_PLATFORM } from "../platform/HostPlatform.js";
 import {
   AnalysisCancelledError,
   cancelledBy,
 } from "../domain/analysisErrorCore.js";
-import type { RetainedResourceScope } from "../application/AnalysisProvider.js";
+import type { RetainedResourceScope } from "../ports/AnalysisProvider.js";
 import {
   probeGhidraJava,
   type GhidraJavaObservation,
@@ -353,8 +354,8 @@ export const inspectGhidraInstallation = async (
 ): Promise<GhidraInstallationInspection> => {
   if (options.signal?.aborted)
     throw cancelledBy("ghidra:installation", options.signal);
-  const platform = options.platform ?? process.platform;
-  const architecture = options.architecture ?? process.arch;
+  const platform = options.platform ?? HOST_PLATFORM.platform;
+  const architecture = options.architecture ?? HOST_PLATFORM.architecture;
   const coordinates = await installationCoordinates(
     options,
     platform,
@@ -587,11 +588,12 @@ const installationCoordinates = async (
       : { source: "homebrew", command: homebrew };
   })();
   let javaCommand = selectedJava.command;
-  // Java is a prerequisite of a selected installation. Without one, or with a
-  // relative JAVA_HOME, configuration validation refuses Ghidra before Java can
+  // Java is a prerequisite of an existing installation. Missing application
+  // properties or a relative JAVA_HOME already refuse Ghidra before Java can
   // matter, so callers such as setup and doctor must not execute a host JVM.
   let javaProbe =
     installDir !== null &&
+    properties !== undefined &&
     (options.javaHome === undefined || path.isAbsolute(options.javaHome))
       ? await host.probeJava(
           javaCommand,
@@ -843,7 +845,7 @@ export const ghidraInstallationDiagnostics = (
 export const ghidraJavaEnvironment = (
   javaHome: string | undefined,
   environment: Readonly<NodeJS.ProcessEnv>,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform,
 ): NodeJS.ProcessEnv => {
   const selectedEnvironment = snapshotEnvironment(environment, platform);
   const boundedEnvironment = {
@@ -978,9 +980,28 @@ const nativeDecompilerCheck = ({
     remediation:
       compatibility?.status === "incompatible"
         ? compatibility.remediation
-        : `Provide an executable Ghidra/Features/Decompiler/os/${NATIVE_PLATFORMS[platform]?.[architecture] ?? "<platform>"}/${platform === "win32" ? "decompile.exe" : "decompile"}, or its build/os equivalent. REA does not build or install native tools.`,
+        : `Provide an executable Ghidra/Features/Decompiler/os/${NATIVE_PLATFORMS[platform]?.[architecture] ?? "<platform>"}/${platform === "win32" ? "decompile.exe" : "decompile"}, or its build/os equivalent.${nativeDecompilerBuildHint(platform, architecture)} REA does not build or install native tools.`,
   });
 };
+
+/** The published installation guide; the npm package does not ship `docs/`. */
+const INSTALLATION_GUIDE =
+  "https://github.com/morluto/rea/blob/main/docs/getting-started/installation.md";
+
+/**
+ * Where to get a decompiler that official release archives omit. Ghidra's
+ * official archives ship native binaries only for Windows and Linux x64; the
+ * archive's decompiler source builds the others.
+ */
+const nativeDecompilerBuildHint = (
+  platform: NodeJS.Platform,
+  architecture: NodeJS.Architecture,
+): string =>
+  platform === "darwin" && (architecture === "x64" || architecture === "arm64")
+    ? ` Official Ghidra release archives include no macOS decompiler; build it from the archive's decompiler source as described in ${INSTALLATION_GUIDE}#${architecture === "arm64" ? "macos-arm64-native-decompiler" : "missing-macos-native-decompiler"}.`
+    : platform === "linux" && architecture === "arm64"
+      ? ` Official Ghidra release archives include no Linux arm64 decompiler; build Ghidra's native components for this host as described in ${INSTALLATION_GUIDE}#ghidra.`
+      : "";
 
 /**
  * Whether a JVM os.name value selects the host platform's native OS directory.
@@ -1132,7 +1153,7 @@ export const discoverGhidraInstallationOnPath = (
   environment: Readonly<NodeJS.ProcessEnv>,
   platform: NodeJS.Platform,
 ): string | undefined => {
-  if (platform !== process.platform) return undefined;
+  if (platform !== HOST_PLATFORM.platform) return undefined;
   const path = platform === "win32" ? win32 : posix;
   if (platform !== "win32" && environment.PATH === undefined) return undefined;
   // Each PATH entry is tried for every launcher name before the next entry.
@@ -1222,7 +1243,7 @@ const stableJavaHome = (
   platform: NodeJS.Platform,
 ): string => {
   // Compare paths only with the matching host filesystem semantics.
-  if (platform !== process.platform) return observedHome;
+  if (platform !== HOST_PLATFORM.platform) return observedHome;
   const sameHome = (candidate: string): boolean => {
     try {
       return (

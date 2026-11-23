@@ -1,4 +1,4 @@
-import type { ProgressReporter } from "../application/ProgressReporter.js";
+import type { ProgressReporter } from "../ports/ProgressReporter.js";
 import type {
   CaptureWebScreenshotInput,
   WebScreenshot,
@@ -11,26 +11,18 @@ import { BrowserObservationError } from "../domain/browserObservationError.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
 import { cdpOriginScopeRefusal } from "./CdpOriginScopeError.js";
+import type { CdpFrameTree } from "./protocol/CdpFrameTree.js";
 import {
-  selectCdpFrameIdentity,
-  cdpFrameEventFacts,
-} from "./CdpFrameIdentity.js";
-import {
-  observedFrameUrl,
-  type CdpFrameTree,
-} from "./protocol/CdpFrameTree.js";
-import {
-  CdpDocumentTracker,
   cdpRootDocument,
-  compareCdpDocuments,
   unverifiedDocumentLimitation,
 } from "./CdpTargetSession.js";
-import type { CdpEndpointDiscovery, CdpEndpointTarget } from "./CdpEndpoint.js";
-import type { CdpConnection, CdpEvent } from "./CdpConnection.js";
 import {
-  observeCdpFrameUrl,
-  classifyCdpFrameUrl,
-} from "./CdpCaptureDocuments.js";
+  CdpTargetDocument,
+  type CdpRootNavigation,
+} from "./CdpTargetDocument.js";
+import type { CdpEndpointDiscovery, CdpEndpointTarget } from "./CdpEndpoint.js";
+import type { CdpConnection } from "./CdpConnection.js";
+import { classifyCdpFrameUrl } from "./CdpCaptureDocuments.js";
 
 import { CdpCaptureCompleteness } from "./CdpCaptureCompleteness.js";
 import { readPngHeaderDimensions } from "../domain/pngHeader.js";
@@ -44,6 +36,8 @@ interface ScreenshotContext {
   readonly signal?: AbortSignal;
   readonly progress?: ProgressReporter;
 }
+
+const screenshotOperation = "capture_web_screenshot";
 
 /** Capture the current viewport without navigation, evaluation, or page mutation. */
 export const captureCdpScreenshot = async (
@@ -74,9 +68,9 @@ export const captureCdpScreenshot = async (
     beforeFacts.scope === "outside_policy" ||
     beforeFacts.scope === "unsupported"
   )
-    throw cdpOriginScopeRefusal("capture_web_screenshot");
+    throw cdpOriginScopeRefusal(screenshotOperation);
   if (beforeObservation.kind !== "observed")
-    throw new BrowserObservationError("inspect_web_page", "protocol_error");
+    throw new BrowserObservationError(screenshotOperation, "protocol_error");
   const beforeUrl = beforeFacts.url;
   const selected = cdpRootDocument(before);
   if (
@@ -84,32 +78,27 @@ export const captureCdpScreenshot = async (
     beforeFacts.origin === null ||
     selected === undefined
   )
-    throw new BrowserObservationError(
-      "capture_web_screenshot",
-      "protocol_error",
-    );
+    throw new BrowserObservationError(screenshotOperation, "protocol_error");
   const navigation: ScreenshotNavigation = {
-    document: new CdpDocumentTracker(selected),
+    document: CdpTargetDocument.watch(context, selected),
     urlChanged: false,
     leftScope: false,
     invalidIdentity: false,
     completeness: new CdpCaptureCompleteness(),
   };
-  const removeListener = context.connection.onEvent((event) => {
-    if (event.sessionId !== context.sessionId) return;
-    observeScreenshotNavigation(event, origins, navigation);
-  });
+  navigation.document.onNavigation((root) =>
+    observeScreenshotNavigation(root, origins, navigation),
+  );
   // A changed document comes first; scope applies to an unchanged one. The
   // visible URL moving within the document still invalidates the image.
   const assertCurrentDocument = () => {
     if (navigation.document.changed)
-      throw new BrowserObservationError("inspect_web_page", "target_changed");
-    if (navigation.leftScope)
-      throw cdpOriginScopeRefusal("capture_web_screenshot");
+      throw new BrowserObservationError(screenshotOperation, "target_changed");
+    if (navigation.leftScope) throw cdpOriginScopeRefusal(screenshotOperation);
     if (navigation.invalidIdentity)
-      throw new BrowserObservationError("inspect_web_page", "protocol_error");
+      throw new BrowserObservationError(screenshotOperation, "protocol_error");
     if (navigation.urlChanged)
-      throw new BrowserObservationError("inspect_web_page", "target_changed");
+      throw new BrowserObservationError(screenshotOperation, "target_changed");
   };
   let screenshot: Awaited<ReturnType<typeof captureScreenshotImage>>;
   let after: CdpFrameTree;
@@ -131,7 +120,7 @@ export const captureCdpScreenshot = async (
       assertSameViewport(currentViewport, recoveredViewport);
       if (!coversViewport(screenshot, recoveredViewport))
         throw new BrowserObservationError(
-          "inspect_web_page",
+          screenshotOperation,
           "protocol_error",
           {
             detail:
@@ -155,34 +144,31 @@ export const captureCdpScreenshot = async (
       !(cause instanceof AnalysisCancelledError) &&
       !(cause instanceof AnalysisError && cause.userCategory === "cancelled")
     )
-      throw new BrowserObservationError("inspect_web_page", "target_changed", {
+      throw new BrowserObservationError(screenshotOperation, "target_changed", {
         cause,
       });
     throw cause;
   } finally {
-    removeListener();
+    navigation.document.close();
   }
   assertCurrentDocument();
   const final = cdpRootDocument(after);
   if (final === undefined)
-    throw new BrowserObservationError(
-      "capture_web_screenshot",
-      "protocol_error",
-    );
-  const comparison = compareCdpDocuments(selected, final);
+    throw new BrowserObservationError(screenshotOperation, "protocol_error");
+  const comparison = navigation.document.observeTree(after);
   if (comparison === "changed")
-    throw new BrowserObservationError("inspect_web_page", "target_changed");
+    throw new BrowserObservationError(screenshotOperation, "target_changed");
   const afterObservation = after.root.url;
   const afterFacts = classifyCdpFrameUrl(afterObservation, origins);
   if (
     afterFacts.scope === "outside_policy" ||
     afterFacts.scope === "unsupported"
   )
-    throw cdpOriginScopeRefusal("capture_web_screenshot");
+    throw cdpOriginScopeRefusal(screenshotOperation);
   if (afterObservation.kind !== "observed")
-    throw new BrowserObservationError("inspect_web_page", "protocol_error");
+    throw new BrowserObservationError(screenshotOperation, "protocol_error");
   if (afterFacts.url === undefined || final.url !== selected.url)
-    throw new BrowserObservationError("inspect_web_page", "target_changed");
+    throw new BrowserObservationError(screenshotOperation, "target_changed");
   const unverified = navigation.document.unknown || comparison === "unknown";
   if (unverified) navigation.completeness.attachLimited("screenshot");
   await context.progress?.report({
@@ -229,7 +215,7 @@ const readScreenshotViewport = async (context: ScreenshotContext) => {
   const { clientWidth: pixelWidth, clientHeight: pixelHeight } = visualViewport;
   // Both viewports describe one page zoom; disagreement is incoherent geometry.
   if (visualViewport.scale !== scale)
-    throw new BrowserObservationError("inspect_web_page", "protocol_error");
+    throw new BrowserObservationError(screenshotOperation, "protocol_error");
   // Keep ordinary surface captures, including their scrollbars and pixel
   // density. The visual viewport excludes scrollbars and supplies only a
   // lower bound on the expected image size, allowing subpixel rounding.
@@ -239,7 +225,7 @@ const readScreenshotViewport = async (context: ScreenshotContext) => {
     !Number.isSafeInteger(minimumWidth) ||
     !Number.isSafeInteger(minimumHeight)
   )
-    throw new BrowserObservationError("inspect_web_page", "protocol_error");
+    throw new BrowserObservationError(screenshotOperation, "protocol_error");
   return {
     clip: { x: pageX, y: pageY, width, height, scale },
     pixelWidth,
@@ -271,7 +257,7 @@ const assertSameViewport = (
     before.pixelWidth !== after.pixelWidth ||
     before.pixelHeight !== after.pixelHeight
   )
-    throw new BrowserObservationError("inspect_web_page", "target_changed", {
+    throw new BrowserObservationError(screenshotOperation, "target_changed", {
       detail: "The visual viewport changed during screenshot capture.",
     });
 };
@@ -302,7 +288,7 @@ const captureScreenshotImage = async (
   );
   const screenshot = decodeScreenshot(data);
   if (screenshot === undefined)
-    throw new BrowserObservationError("inspect_web_page", "protocol_error");
+    throw new BrowserObservationError(screenshotOperation, "protocol_error");
   return screenshot;
 };
 
@@ -321,57 +307,36 @@ const decodeScreenshot = (
 };
 
 interface ScreenshotNavigation {
-  readonly document: CdpDocumentTracker;
+  readonly document: CdpTargetDocument;
   urlChanged: boolean;
   leftScope: boolean;
   invalidIdentity: boolean;
   readonly completeness: CdpCaptureCompleteness;
 }
 
+/**
+ * Any committed root navigation away from the selected document or URL
+ * invalidates the image. The target session's document owner has already
+ * classified the event and compared the document.
+ */
 const observeScreenshotNavigation = (
-  event: CdpEvent,
+  navigation: CdpRootNavigation,
   origins: ReadonlySet<string>,
   state: ScreenshotNavigation,
 ): void => {
-  const current = state.document.current;
-  const frameFacts = cdpFrameEventFacts(event);
-  const identity = selectCdpFrameIdentity(frameFacts, current.frameId);
-  if (identity.applicability === "not_applicable") return;
-  if (identity.identityIssue !== null || identity.parentIssue !== null) {
+  if (navigation.kind === "unreadable_child") {
     state.completeness.exclude("screenshot", "invalid_protocol_value");
-    if (
-      identity.selection === "unknown" &&
-      identity.parentRelation === "child" &&
-      identity.identityIssue !== null
-    )
-      return;
-    state.invalidIdentity = true;
     return;
   }
-  if (identity.selection === "unknown") {
-    if (identity.parentRelation === "child") return;
+  if (navigation.kind === "unidentified") {
     state.completeness.exclude("screenshot", "invalid_protocol_value");
     state.invalidIdentity = true;
     return;
   }
-  if (identity.selection === "other" && !identity.isRootReplacement) return;
-  // A requested navigation does not establish a committed document change.
-  // The frame-tree read after capture still verifies the selected URL.
-  if (event.method === "Page.frameRequestedNavigation") return;
-  const observed = observeCdpFrameUrl(frameFacts.source);
-  const facts = classifyCdpFrameUrl(observed, origins);
-  const comparison = state.document.observe(
-    event.method === "Page.frameNavigated"
-      ? {
-          frameId: identity.frameId ?? current.frameId,
-          loaderId: frameFacts.loaderId,
-          url: observedFrameUrl(observed),
-        }
-      : // A same-document navigation keeps the document's loader.
-        { ...current, url: observedFrameUrl(observed) },
-  );
-  if (comparison === "same") return;
+  if (navigation.comparison === "same") return;
   state.urlChanged = true;
+  const observed = navigation.frame.url;
+  const facts = classifyCdpFrameUrl(observed, origins);
   if (facts.scope === "outside_policy" || facts.scope === "unsupported")
     state.leftScope = true;
   if (observed.kind !== "observed") state.invalidIdentity = true;

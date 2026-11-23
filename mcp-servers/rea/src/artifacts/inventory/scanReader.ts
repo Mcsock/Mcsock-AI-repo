@@ -13,23 +13,19 @@ import {
   annotateEnglishUnicodeCaseCollisions,
   ArtifactPathRegistry,
   normalizeArtifactPath,
-} from "../ArtifactPaths.js";
-import {
   ArtifactEntryContentUnavailable,
   ArtifactReaderFailure,
   type ArtifactEntry,
   type ArtifactReader,
   type ArtifactReaderTraversal,
-} from "../ArtifactReader.js";
+  abortIfNeeded,
+  DirectoryArtifactEntryAccessDenied,
+  DirectoryArtifactReader,
+} from "../../resources/index.js";
 import {
   ArtifactTraversalObservation,
   declaredArtifactEntries,
 } from "../ArtifactTraversalObservation.js";
-import {
-  DirectoryArtifactEntryAccessDenied,
-  DirectoryArtifactReader,
-  DirectoryArtifactTraversalLimit,
-} from "../DirectoryArtifactReader.js";
 import type { ArtifactInventoryOptions } from "./types.js";
 import { AsarArtifactReader } from "../AsarArtifactReader.js";
 import {
@@ -48,8 +44,9 @@ import {
   type ArtifactParentResolution,
   type MutableOccurrence,
 } from "./ArtifactGraphConstruction.js";
+import { invariantViolation } from "../../domain/internalInvariant.js";
 import type { ArtifactIntegrityPolicyName } from "../../domain/artifactIntegrityPolicy.js";
-import { abortIfNeeded, hashReadable } from "../ArtifactHash.js";
+import { hashReadable } from "../ArtifactHash.js";
 
 export interface PendingIntegrityContradiction {
   readonly occurrence: MutableOccurrence;
@@ -122,6 +119,14 @@ export const scanReader = async (
       traversal: { status: "complete", limitations: [] },
       rootContradiction: undefined,
     };
+  const maximumEntries = acquisitionLimits?.maximumEntries;
+  if (
+    maximumEntries !== undefined &&
+    (!Number.isSafeInteger(maximumEntries) || maximumEntries < 0)
+  )
+    throw invariantViolation(
+      "Artifact inventory maximumEntries must be a nonnegative safe integer",
+    );
   const context: ScanContext = {
     acquisitionLimits,
     entriesExamined: 0,
@@ -184,7 +189,7 @@ const containerContradiction = (
     throw new ArtifactReaderFailure(
       "integrity",
       "Artifact integrity metadata disagrees with content: .",
-      undefined,
+      { integrityCheck: "declared-digest" },
       artifactContainerIntegrityDetails(".", pair),
     );
   return pair;
@@ -199,6 +204,13 @@ class InventoryAcquisitionLimit extends ArtifactReaderFailure {
   }
 }
 
+const admitExaminedEntry = (context: ScanContext): void => {
+  if (context.acquisitionLimits === undefined) return;
+  if (context.entriesExamined >= context.acquisitionLimits.maximumEntries)
+    throw new InventoryAcquisitionLimit();
+  context.entriesExamined += 1;
+};
+
 const inventoryEntries = (
   context: ScanContext,
   reader: ArtifactReader,
@@ -209,8 +221,7 @@ const inventoryEntries = (
     ...(reader instanceof DirectoryArtifactReader &&
     context.acquisitionLimits !== undefined
       ? {
-          maximumEntries:
-            context.acquisitionLimits.maximumEntries - context.entriesExamined,
+          admitExaminedEntry: () => admitExaminedEntry(context),
         }
       : {}),
     onOmission: (omission) =>
@@ -250,12 +261,8 @@ const visitArtifactEntries = async (
         continue;
       }
       const entry = next.value;
-      if (
-        context.acquisitionLimits !== undefined &&
-        context.entriesExamined >= context.acquisitionLimits.maximumEntries
-      )
-        throw new InventoryAcquisitionLimit();
-      context.entriesExamined += 1;
+      if (!(frame.reader instanceof DirectoryArtifactReader))
+        admitExaminedEntry(context);
       const logicalPath = normalizeArtifactPath(
         frame.prefix.length === 0
           ? entry.path
@@ -365,10 +372,7 @@ const visitArtifactEntries = async (
       }
     }
   } catch (cause: unknown) {
-    if (
-      cause instanceof InventoryAcquisitionLimit ||
-      cause instanceof DirectoryArtifactTraversalLimit
-    )
+    if (cause instanceof InventoryAcquisitionLimit)
       context.traversal.record({
         status: "unknown",
         limitations: [cause.message],
@@ -421,7 +425,9 @@ const digestArtifactEntry = async (
   const reconstruction =
     currentReader === context.reader ? context.reconstruction : undefined;
   if (reconstruction !== undefined && entry.byteOffset !== reconstruction.bytes)
-    throw new ArtifactReaderFailure("integrity", "Noncontiguous iNES regions");
+    throw new ArtifactReaderFailure("integrity", "Noncontiguous iNES regions", {
+      integrityCheck: "reconstruction",
+    });
   const digest = await hashReadable(
     await currentReader.open(entry, context.signal),
     context.signal,
@@ -448,6 +454,7 @@ const digestArtifactEntry = async (
     throw new ArtifactReaderFailure(
       "integrity",
       "The selected integrity digest was not computed",
+      { integrityCheck: "declared-digest" },
     );
   const mismatched = claim !== null && claim.digest !== observed;
   if (mismatched && claim !== null && observed !== undefined) {
@@ -455,7 +462,7 @@ const digestArtifactEntry = async (
       throw new ArtifactReaderFailure(
         "integrity",
         `Artifact integrity metadata disagrees with content: ${logicalPath}`,
-        undefined,
+        { integrityCheck: "declared-digest" },
         artifactIntegrityDetails(logicalPath, claim, observed, entry.unpacked),
       );
     context.pendingContradictions.push({

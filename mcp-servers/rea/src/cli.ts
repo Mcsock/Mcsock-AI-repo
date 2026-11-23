@@ -1,4 +1,8 @@
-import type { FridaInstrumentationPort } from "./application/frida/FridaInstrumentationPort.js";
+import type { FridaInstrumentationPort } from "./ports/frida/FridaInstrumentationPort.js";
+import {
+  CURRENT_ENTRYPOINT_PATH,
+  isDirectEntrypoint,
+} from "./process/CurrentEntrypointPath.js";
 import {
   CLI_COMMAND_REGISTRATIONS,
   CLI_REGISTRATION_ORDER,
@@ -12,6 +16,7 @@ import * as setupModule from "./cli/setupCommands.js";
 import * as coreAnalysisModule from "./cli/coreAnalysisCommands.js";
 import * as reverseEngineeringModule from "./cli/reverseEngineeringCommands.js";
 import * as cutterModule from "./cli/cutterCommands.js";
+import * as userConfigModule from "./cli/userConfigCommands.js";
 import * as utilityModule from "./cli/utilityCommands.js";
 import * as binaryDiagnosticsModule from "./cli/binaryDiagnosticsCommands.js";
 import * as wasmModule from "./cli/wasmCommands.js";
@@ -27,12 +32,15 @@ import * as modelModule from "./cli/modelCommands.js";
 import * as gpuModule from "./cli/gpuCommands.js";
 import * as rustModule from "./cli/rustCommands.js";
 import * as pythonPycModule from "./cli/pythonPycCommands.js";
+import * as nugetNupkgModule from "./cli/nugetNupkgCommands.js";
 import * as erlangModule from "./cli/erlangCommands.js";
 import * as v8CodeCacheModule from "./cli/v8CodeCacheCommands.js";
+import * as mavenGradleMetadataModule from "./cli/mavenGradleMetadataCommands.js";
 import * as sqliteModule from "./cli/sqliteCommands.js";
 import * as artifactModule from "./cli/artifactCommands.js";
 import * as managedModule from "./cli/managedCommands.js";
 import * as firmwareModule from "./cli/firmwareCommands.js";
+import * as uefiModule from "./cli/uefiCommands.js";
 import * as androidModule from "./cli/androidCommands.js";
 import * as pcapModule from "./cli/pcapCommands.js";
 import * as flutterModule from "./cli/flutterCommands.js";
@@ -44,13 +52,15 @@ import * as browserModule from "./cli/browserCommands.js";
 import * as webRuntimeModule from "./cli/webRuntimeCommands.js";
 import * as webNetworkCaptureModule from "./cli/webNetworkCaptureCommands.js";
 import * as advancedBrowserModule from "./cli/browserAdvancedCommands.js";
-import * as browserScenarioModule from "./cliBrowserScenarioCommands.js";
+import * as browserScenarioModule from "./cli/browserScenarioCommands.js";
 import * as electronModule from "./cli/electronCommands.js";
 import * as javaScriptRuntimeObservationModule from "./cli/javascriptRuntimeCommands.js";
 import * as guidanceModule from "./cli/guidanceCommands.js";
 import * as guidedWorkflowModule from "./cli/guidedWorkflowCommands.js";
+import * as sourceToBundleModule from "./cli/sourceToBundleCommand.js";
+import * as staticObservedEndpointsModule from "./cli/staticObservedEndpointsCommand.js";
 import * as analysisViewModule from "./cli/analysisViewCommands.js";
-import * as evidenceModule from "./cliEvidenceCommands.js";
+import * as evidenceModule from "./cli/evidenceCommands.js";
 import * as environmentModule from "./cli/environmentCommands.js";
 import * as processModule from "./cli/processCommands.js";
 import * as desktopCaptureModule from "./cli/desktopCaptureCommands.js";
@@ -69,6 +79,7 @@ const CLI_COMMAND_MODULES: CliCommandModules = {
   reverseEngineering: reverseEngineeringModule,
   cutter: cutterModule,
   utility: utilityModule,
+  userConfig: userConfigModule,
   binaryDiagnostics: binaryDiagnosticsModule,
   wasm: wasmModule,
   apkSignature: apkSignatureModule,
@@ -83,12 +94,15 @@ const CLI_COMMAND_MODULES: CliCommandModules = {
   gpu: gpuModule,
   rust: rustModule,
   pythonPyc: pythonPycModule,
+  nugetNupkg: nugetNupkgModule,
   erlang: erlangModule,
   v8CodeCache: v8CodeCacheModule,
+  mavenGradleMetadata: mavenGradleMetadataModule,
   sqlite: sqliteModule,
   artifact: artifactModule,
   managed: managedModule,
   firmware: firmwareModule,
+  uefi: uefiModule,
   android: androidModule,
   pcap: pcapModule,
   flutter: flutterModule,
@@ -105,6 +119,8 @@ const CLI_COMMAND_MODULES: CliCommandModules = {
   javaScriptRuntimeObservation: javaScriptRuntimeObservationModule,
   guidance: guidanceModule,
   guidedWorkflow: guidedWorkflowModule,
+  sourceToBundle: sourceToBundleModule,
+  staticObservedEndpoints: staticObservedEndpointsModule,
   analysisView: analysisViewModule,
   evidence: evidenceModule,
   environment: environmentModule,
@@ -122,7 +138,7 @@ const CLI_COMMAND_MODULES: CliCommandModules = {
  * Build the complete one-shot Incur CLI without starting Hopper at import time.
  * Analysis commands acquire and close their own sessions; bare `mcp` and
  * `--mcp` are intercepted by the executable dispatcher before this module loads.
- * One-shot commands load only their own registrars; see `cli/cliLoader.ts`.
+ * One-shot commands load only their own registrars; see `cliLoader.ts`.
  */
 export const createCli = (
   selectedEnvironment: Readonly<
@@ -130,14 +146,25 @@ export const createCli = (
   > = process.env,
   resultOutput?: CliResultOutput,
   fridaInstrumentation?: FridaInstrumentationPort,
+  savedDefaults?: ReadonlySet<string>,
 ): CliInstance =>
   createCliShell({
     selectedEnvironment,
     resultOutput,
     fridaInstrumentation,
+    savedDefaults,
     createAnalysis: createDirectAnalysis,
     registrations: CLI_REGISTRATION_ORDER.map((id) => ({
       registration: CLI_COMMAND_REGISTRATIONS[id],
       module: CLI_COMMAND_MODULES[id],
     })),
   });
+
+// Direct execution needs a visible failure pointing to the dispatcher. Imports
+// only expose the registry. A normal exit lets piped stderr drain completely.
+if (isDirectEntrypoint(CURRENT_ENTRYPOINT_PATH, import.meta.url)) {
+  process.stderr.write(
+    "dist/cli.js is the command registry, not the CLI entry point. Run `rea` (scripts/rea.mjs) instead.\n",
+  );
+  process.exitCode = 1;
+}

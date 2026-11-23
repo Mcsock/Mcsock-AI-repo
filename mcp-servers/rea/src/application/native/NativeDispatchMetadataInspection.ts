@@ -7,10 +7,10 @@ import {
 } from "../../domain/native/objcSwiftMetadata.js";
 import { AnalysisOutputError } from "../../domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../domain/analysisErrorProjection.js";
-import { jsonValueSchema } from "../../domain/jsonValue.js";
+import { ownedJsonValueSchema } from "../../domain/jsonValue.js";
 import { err, ok } from "../../domain/result.js";
 import { executeFact } from "../AnalysisOperationFacts.js";
-import type { AnalysisOperationPort } from "../AnalysisProvider.js";
+import type { AnalysisOperationPort } from "../../ports/AnalysisProvider.js";
 import type { EnhancedResult } from "../EnhancedToolTypes.js";
 
 /** Source operations for this workflow, shared with capability discovery. */
@@ -44,8 +44,12 @@ export const inspectNativeDispatch = async (
       ? {}
       : {
           objc_class_import_addresses: [...objcClassImportAddresses],
-          objc_class_import_addresses_complete:
-            objcClassImportAddressesComplete ?? true,
+          ...(objcClassImportAddressesComplete === undefined
+            ? {}
+            : {
+                objc_class_import_addresses_complete:
+                  objcClassImportAddressesComplete,
+              }),
         }),
   };
   const binaryMetadata = await analysis.execute(
@@ -72,7 +76,7 @@ export const inspectNativeDispatch = async (
           ),
         ),
       );
-    return ok(jsonValueSchema.parse(parsed.data));
+    return ok(ownedJsonValueSchema.parse(parsed.data));
   }
   if (!permitsCapabilityFallback(binaryMetadata.error))
     return err(binaryMetadata.error);
@@ -107,7 +111,7 @@ export const inspectNativeDispatch = async (
     };
   }
   return ok(
-    jsonValueSchema.parse(
+    ownedJsonValueSchema.parse(
       nativeDispatchMetadataResultSchema.parse({
         target_sha256: execution.subject?.sha256 ?? null,
         target_architecture: execution.subject?.architecture ?? null,

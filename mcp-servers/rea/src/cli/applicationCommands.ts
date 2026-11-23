@@ -1,24 +1,16 @@
 import { registerPlaywrightTraceCommand } from "./playwrightTraceCommand.js";
 import { registerApiContractCommand } from "./apiContractCommand.js";
 import { registerNtfsJournalCommand } from "./ntfsJournalCommand.js";
-import { Cli, z } from "incur";
+import type { CliInstance } from "./types.js";
 
-import { CLI_COMMANDS } from "../cliCommandNames.js";
-import { parseCliJsonInput } from "../cliJsonInput.js";
-import { logCliCommand } from "../cliLogging.js";
+import { cliCommandFor } from "../contracts/cliCommandNames.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import type { Logger } from "pino";
-import { registerSourceToBundleCommand } from "./sourceToBundleCommand.js";
-import { registerStaticObservedEndpointsCommand } from "./staticObservedEndpointsCommand.js";
-import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
-import { reconstructionCoverageRequestSchema } from "../domain/reconstructionCoverageInput.js";
-import { reconstructionObligationLedgerRequestSchema } from "../application/ReconstructionObligationLedgerRequest.js";
-import { jsonInputArgument } from "./jsonInputArgument.js";
 import { APPLICATION_TOOL_CONTRACTS } from "../contracts/applicationToolContracts.js";
 import { contractNamed } from "./contractCliDescription.js";
-import { registerContractDocumentCommand } from "./contractCommand.js";
+import { registerContractDocumentCommand } from "./contractDocumentCommand.js";
 import type { EvidenceLookup } from "../application/EvidenceInputResolver.js";
 import type { Evidence } from "../domain/evidence.js";
 import type { Result } from "../domain/result.js";
@@ -26,8 +18,6 @@ import {
   evidenceBundleOption,
   runEvidenceInputCommand,
 } from "./evidenceInputCommand.js";
-
-type CliInstance = ReturnType<typeof Cli.create>;
 
 /** Application workflows whose CLI input is one Evidence-carrying JSON document. */
 type EvidenceWorkflowOperation =
@@ -43,13 +33,13 @@ const workflowJsonDescription = "Inline workflow JSON or JSON file path";
 
 /** Register CLI equivalents of provider-neutral application graph workflows. */
 export const registerApplicationCommands = (
-  cli: ReturnType<typeof Cli.create>,
+  cli: CliInstance,
   logger: Logger,
 ): void => {
   registerEvidenceJsonCommand({
     cli,
     logger,
-    name: CLI_COMMANDS.traceApplicationFeature,
+    name: cliCommandFor("trace_application_feature"),
     operation: "trace_application_feature",
     omit: {
       view: "A one-shot command retains no session Evidence for a selected view; save the complete trace and query it with inspect-analysis-view",
@@ -66,7 +56,7 @@ export const registerApplicationCommands = (
   registerEvidenceJsonCommand({
     cli,
     logger,
-    name: CLI_COMMANDS.traceJavaScriptSemantics,
+    name: cliCommandFor("trace_javascript_semantics"),
     operation: "trace_javascript_semantics",
     description:
       "Trace bounded static semantic relations through authenticated application Evidence",
@@ -82,7 +72,7 @@ export const registerApplicationCommands = (
   registerEvidenceJsonCommand({
     cli,
     logger,
-    name: CLI_COMMANDS.compareApplicationVersions,
+    name: cliCommandFor("compare_application_versions"),
     operation: "compare_application_versions",
     description:
       "Compare two authenticated JavaScript Application Graph versions",
@@ -95,15 +85,13 @@ export const registerApplicationCommands = (
       return result.ok ? { ok: true, value: result.value.evidence } : result;
     },
   });
-  registerSourceToBundleCommand(cli, logger);
-  registerStaticObservedEndpointsCommand(cli, logger);
   registerApiContractCommand(cli, logger);
   registerNtfsJournalCommand(cli, logger);
   registerPlaywrightTraceCommand(cli, logger);
   registerEvidenceJsonCommand({
     cli,
     logger,
-    name: CLI_COMMANDS.compareJavaScriptExportShapes,
+    name: cliCommandFor("compare_javascript_export_shapes"),
     operation: "compare_javascript_export_shapes",
     description:
       "Compare exact static JavaScript export return shapes without execution",
@@ -121,13 +109,13 @@ export const registerApplicationCommands = (
   registerEvidenceJsonCommand({
     cli,
     logger,
-    name: CLI_COMMANDS.projectAndroidApplicationGraph,
+    name: cliCommandFor("project_android_application_graph"),
     operation: "project_android_application_graph",
     description:
       "Project authenticated APK inventory Evidence into an Android application graph",
     workflow: async (input, lookup, signal) => {
       const { projectAndroidApplicationEvidence } =
-        await import("../application/android/AndroidApplicationService.js");
+        await import("../application/InventoryProjectionEvidence.js");
       const result = projectAndroidApplicationEvidence(input, lookup, {
         signal,
       });
@@ -137,13 +125,13 @@ export const registerApplicationCommands = (
   registerEvidenceJsonCommand({
     cli,
     logger,
-    name: CLI_COMMANDS.projectAppleApplicationGraph,
+    name: cliCommandFor("project_apple_application_graph"),
     operation: "project_apple_application_graph",
     description:
       "Project authenticated IPA or macOS app inventory Evidence into an Apple application graph",
     workflow: async (input, lookup, signal) => {
       const { projectAppleApplicationEvidence } =
-        await import("../application/apple/AppleApplicationService.js");
+        await import("../application/InventoryProjectionEvidence.js");
       const result = projectAppleApplicationEvidence(input, lookup, { signal });
       return result.ok ? { ok: true, value: result.value.evidence } : result;
     },
@@ -151,13 +139,13 @@ export const registerApplicationCommands = (
   registerEvidenceJsonCommand({
     cli,
     logger,
-    name: CLI_COMMANDS.projectHarmonyApplicationGraph,
+    name: cliCommandFor("project_harmony_application_graph"),
     operation: "project_harmony_application_graph",
     description:
       "Project authenticated HarmonyOS HAP, HSP, or App Pack inventory Evidence into an application graph",
     workflow: async (input, lookup, signal) => {
       const { projectHarmonyApplicationEvidence } =
-        await import("../application/harmony/HarmonyApplicationService.js");
+        await import("../application/InventoryProjectionEvidence.js");
       const result = projectHarmonyApplicationEvidence(input, lookup, {
         signal,
       });
@@ -166,99 +154,73 @@ export const registerApplicationCommands = (
   });
 };
 
+/**
+ * Inline reconstruction workflows. Each owner authenticates its embedded
+ * Evidence bundle itself, so the handler passes the decoded document on.
+ */
+const registerReconstructionDocumentCommand = <
+  Operation extends
+    | "build_reconstruction_obligation_ledger"
+    | "evaluate_reconstruction_coverage",
+>(
+  cli: CliInstance,
+  logger: Logger,
+  operation: Operation,
+  command: string,
+  description: string,
+  workflow: (
+    input: unknown,
+  ) => Promise<
+    | { readonly ok: true; readonly value: JsonValue }
+    | { readonly ok: false; readonly error: AnalysisError }
+  >,
+): void =>
+  registerContractDocumentCommand(
+    cli,
+    logger,
+    contractNamed(APPLICATION_TOOL_CONTRACTS, operation),
+    { command, description, document: workflowJsonDescription },
+    async (input) => {
+      const result = await workflow(input);
+      return result.ok
+        ? result.value
+        : {
+            error: "Application workflow failed",
+            ...projectAnalysisError(result.error, "invocation"),
+          };
+    },
+  );
+
 const registerObligationLedgerCommand = (
   cli: CliInstance,
   logger: Logger,
 ): void =>
-  registerJsonCommand({
+  registerReconstructionDocumentCommand(
     cli,
     logger,
-    name: CLI_COMMANDS.buildReconstructionObligationLedger,
-    description:
-      "Generate a deterministic Evidence-backed reconstruction obligation ledger page",
-    inputSchema: z.unknown(),
-    documentSchema: reconstructionObligationLedgerRequestSchema,
-    workflow: async (input) => {
+    "build_reconstruction_obligation_ledger",
+    cliCommandFor("build_reconstruction_obligation_ledger"),
+    "Generate a deterministic Evidence-backed reconstruction obligation ledger page",
+    async (input) => {
       const { buildReconstructionObligationLedgerEvidence } =
         await import("../application/ReconstructionObligationLedgerService.js");
       return buildReconstructionObligationLedgerEvidence(input);
     },
-  });
+  );
 
 const registerCoverageCommand = (cli: CliInstance, logger: Logger): void =>
-  registerJsonCommand({
+  registerReconstructionDocumentCommand(
     cli,
     logger,
-    name: CLI_COMMANDS.evaluateReconstructionCoverage,
-    description: "Evaluate inline fail-closed reconstruction coverage",
-    inputSchema: z.unknown(),
-    documentSchema: reconstructionCoverageRequestSchema,
-    workflow: async (input) => {
+    "evaluate_reconstruction_coverage",
+    cliCommandFor("evaluate_reconstruction_coverage"),
+    "Evaluate inline fail-closed reconstruction coverage",
+    async (input) => {
       const { evaluateReconstructionCoverage } =
         await import("../application/ReconstructionCoverageService.js");
       return evaluateReconstructionCoverage(input);
     },
-  });
-
-interface JsonCommandOptions<Schema extends z.ZodType> {
-  readonly cli: CliInstance;
-  readonly logger: Logger;
-  readonly name: string;
-  readonly description: string;
-  readonly inputSchema: Schema;
-  /** Contract advertised by `--schema`. Runtime parsing stays `inputSchema`. */
-  readonly documentSchema?: z.ZodType;
-  readonly workflow: (
-    input: z.output<Schema>,
-  ) => Promise<
-    | { readonly ok: true; readonly value: JsonValue }
-    | { readonly ok: false; readonly error: AnalysisError }
-  >;
-}
-
-const registerJsonCommand = <Schema extends z.ZodType>({
-  cli,
-  logger,
-  name,
-  description,
-  inputSchema,
-  documentSchema,
-  workflow,
-}: JsonCommandOptions<Schema>): void => {
-  cli.command(name, {
-    description,
-    args: z.object({
-      inputJson: jsonInputArgument(
-        workflowJsonDescription,
-        documentSchema ?? inputSchema,
-      ),
-    }),
-    run: ({ args }) =>
-      logCliCommand(logger, name, async () => {
-        const input = await parseCliJsonInput(args.inputJson, name);
-        if (!input.ok) return input.error;
-        const parsed = inputSchema.safeParse(input.value);
-        if (!parsed.success)
-          return {
-            error: "Application workflow failed",
-            ...projectAnalysisError(
-              analysisInputErrorFromIssues(
-                name,
-                parsed.error.issues,
-                input.value,
-              ),
-            ),
-          };
-        const result = await workflow(parsed.data);
-        return result.ok
-          ? result.value
-          : {
-              error: "Application workflow failed",
-              ...projectAnalysisError(result.error, "invocation"),
-            };
-      }),
-  });
-};
+  );
 
 /** Evidence consumers share one explicit portable source and cancellation lifetime. */
 const registerEvidenceJsonCommand = ({
@@ -293,11 +255,10 @@ const registerEvidenceJsonCommand = ({
       ...(omit === undefined ? {} : { omit }),
       cliOptions: { evidenceBundle: evidenceBundleOption },
     },
-    async (input, { signal, cliOptions }) => {
+    async (input, { signal, frame, cliOptions }) => {
       const result = await runEvidenceInputCommand(
-        operation,
-        cliOptions.evidenceBundle,
-        signal,
+        input,
+        { operation, signal, frame, cliOptions },
         (lookup) => workflow(input, lookup, signal),
       );
       return result.ok

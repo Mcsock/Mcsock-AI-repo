@@ -63,9 +63,11 @@ it("retains the root when a cleanup fails and retries only that cleanup", async 
     );
     expect(fixture.released).toBe(false);
     expect(await exists(join(fixture.path, "evidence"))).toBe(true);
-    // Whoever holds the failure holds the fixture as its cleanup lease.
     expect((failure as { cleanupLeases?: unknown[] }).cleanupLeases?.[0]).toBe(
       fixture,
+    );
+    expect(() => fixture.releaseAfter(() => undefined)).toThrow(
+      /already being released/u,
     );
     clientFails = false;
     await fixture.release();
@@ -143,24 +145,6 @@ it("keeps the verification failure and the cleanup failure", async () => {
   );
 });
 
-it("keeps registration closed after a failed release", async () => {
-  const fixture = new VerifierFixture({
-    path: "/fixture/root",
-    close: async () => undefined,
-  });
-  let fails = true;
-  fixture.releaseAfter(async () => {
-    if (fails) throw new Error("client close failed");
-  });
-  await expect(fixture.release()).rejects.toBeInstanceOf(AggregateError);
-  expect(() => fixture.releaseAfter(async () => undefined)).toThrow(
-    /already being released/u,
-  );
-  fails = false;
-  await fixture.release();
-  expect(fixture.released).toBe(true);
-});
-
 it("runs a cleanup shared by two fixtures once it has confirmed", async () => {
   let attempts = 0;
   const closeClient = onceConfirmed(async () => {
@@ -191,4 +175,141 @@ it("allocates a plain temporary directory for child scratch space", async () => 
   expect(await exists(fixture.path)).toBe(true);
   await fixture.release();
   expect(await exists(fixture.path)).toBe(false);
+});
+
+it("keeps a retained root across every release and names why", async () => {
+  let closes = 0;
+  const fixture = new VerifierFixture({
+    path: "/fixture/root",
+    close: async () => {
+      closes += 1;
+    },
+  });
+  fixture.retain("Command cleanup is incomplete.");
+  for (const _attempt of [1, 2]) {
+    const failure: unknown = await fixture
+      .release()
+      .catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(
+      ((failure as AggregateError).errors as Error[]).map(
+        ({ message }) => message,
+      ),
+    ).toEqual([
+      "Command cleanup is incomplete.",
+      "Retained verifier fixture /fixture/root because a cleanup that may still use it did not confirm.",
+    ]);
+  }
+  expect(closes).toBe(0);
+  expect(fixture.released).toBe(false);
+});
+
+it("keeps an artifact directory, owned by the verifier and named on stderr", async () => {
+  const parent = await VerifierFixture.open({ prefix: "rea-fixture-test-" });
+  const written: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string) => {
+    written.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const artifacts = await VerifierFixture.keepArtifacts({
+      prefix: "rea-client-",
+      parent: parent.path,
+    });
+    expect(artifacts.kept).toBe(true);
+    expect(artifacts.path.startsWith(join(parent.path, "rea-client-"))).toBe(
+      true,
+    );
+    expect((await stat(artifacts.path)).mode & 0o077).toBe(0);
+    expect(written).toEqual([
+      `Keeping verifier artifacts at ${artifacts.path}\n`,
+    ]);
+  } finally {
+    process.stderr.write = write;
+    await parent.release();
+  }
+});
+
+it("keeps a root on request after its cleanups confirm, and names it", async () => {
+  let closes = 0;
+  const order: string[] = [];
+  const fixture = new VerifierFixture({
+    path: "/fixture/kept",
+    close: async () => {
+      closes += 1;
+    },
+  });
+  let failing = true;
+  fixture.releaseAfter(() => {
+    order.push("client");
+    if (failing) throw new Error("client did not close");
+  });
+  const written: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string) => {
+    written.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    // An unconfirmed cleanup retains the root as release would.
+    await expect(fixture.keep("kept for review")).rejects.toMatchObject({
+      cleanupLeases: [fixture],
+    });
+    expect(written).toEqual([]);
+    failing = false;
+    await fixture.keep("kept for review");
+    expect(written).toEqual([
+      "Keeping verifier fixture /fixture/kept: kept for review\n",
+    ]);
+  } finally {
+    process.stderr.write = write;
+  }
+  expect(order).toEqual(["client", "client"]);
+  expect(closes).toBe(0);
+  expect(fixture.released).toBe(false);
+  expect(() => fixture.releaseAfter(() => undefined)).toThrow(
+    /already being released/u,
+  );
+});
+
+it("closes early resources now and keeps a failed one for release to retry", async () => {
+  let closes = 0;
+  const fixture = new VerifierFixture({
+    path: "/fixture/early",
+    close: async () => {
+      closes += 1;
+    },
+  });
+  const calls: string[] = [];
+  let clientFails = true;
+  const failure: unknown = await fixture
+    .closeEarly([
+      () => {
+        calls.push("client");
+        if (clientFails) throw new Error("client did not close");
+      },
+      () => {
+        calls.push("transport");
+      },
+    ])
+    .catch((cause: unknown) => cause);
+  // Both ran now, in order, and the client's failure is reported.
+  expect(calls).toEqual(["client", "transport"]);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(
+    ((failure as AggregateError).errors as Error[]).map(
+      ({ message }) => message,
+    ),
+  ).toEqual(["client did not close"]);
+  // Release retries only the client and removes the root once it confirms.
+  await expect(fixture.release()).rejects.toMatchObject({
+    cleanupLeases: [fixture],
+  });
+  expect(closes).toBe(0);
+  clientFails = false;
+  await fixture.release();
+  expect(calls).toEqual(["client", "transport", "client", "client"]);
+  expect(closes).toBe(1);
+  expect(fixture.released).toBe(true);
 });

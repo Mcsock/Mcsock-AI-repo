@@ -1884,6 +1884,24 @@ def test_resolve_single_node_still_takes_a_prefix_shorthand():
     assert _resolve_single_node(G, "email") == ("mail", None)
 
 
+def test_resolve_single_node_takes_an_exact_node_id_before_ranking():
+    """An id that tokenizes like its source path lost to that file's L1 node, so
+    the "Retry with the full node id" advice itself failed (#5343)."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.MultiDiGraph()
+    G.add_node("docs_example_skill_skill", label="example-skill/SKILL.md",
+               source_file="docs/example-skill/SKILL.md", source_location="L1")
+    G.add_node("docs_example-skill_SKILL.md", label="example-skill/SKILL.md",
+               source_file="docs/example-skill/SKILL.md")
+
+    for nid in G:
+        assert _resolve_single_node(G, nid) == (nid, None)
+    nid, err = _resolve_single_node(G, "example-skill/SKILL.md")
+    assert nid is None
+    assert err is not None and err.startswith("Ambiguous:")
+
+
 def test_resolve_single_node_prefers_an_exact_name_over_a_substring():
     from graphify.serve import _resolve_single_node
 
@@ -2321,3 +2339,44 @@ def test_query_graph_text_inheritance_filter_walks_the_hierarchy():
     assert "Context: inherits (explicit)" in text
     assert "2 nodes found" in text
     assert "helper" not in text
+
+
+def _make_two_repo_graph() -> nx.Graph:
+    """What `merge-graphs` writes for two repos: a local call, a member call it
+    resolved across the repo boundary, and a contract type both repos declare."""
+    G = nx.Graph()
+    nodes = {
+        "web::checkout": ("Checkout", "web", "web/checkout.py"),
+        "web::cart": ("Cart", "web", "web/cart.py"),
+        "web::order": ("Order", "web", "web/order.py"),
+        "pay::charge": ("charge", "pay", "pay/charge.py"),
+        "pay::order": ("Order", "pay", "pay/order.py"),
+    }
+    for nid, (label, repo, source_file) in nodes.items():
+        G.add_node(nid, label=label, repo=repo, source_file=source_file, source_location="L1", community=0)
+    G.add_edge("web::checkout", "web::cart", relation="calls", confidence="EXTRACTED", context="call")
+    G.add_edge(
+        "web::checkout", "pay::charge",
+        relation="calls", confidence="INFERRED", confidence_score=0.85, context="cross_repo",
+    )
+    G.add_edge(
+        "web::order", "pay::order",
+        relation="same_type_as", confidence="INFERRED", confidence_score=0.85, context="cross_repo",
+    )
+    return G
+
+
+def test_call_filter_keeps_calls_resolved_across_repos():
+    filtered = _filter_graph_by_context(_make_two_repo_graph(), ["call"])
+    assert set(filtered.edges()) == {("web::checkout", "web::cart"), ("web::checkout", "pay::charge")}
+
+
+def test_cross_repo_filter_still_matches_by_context():
+    filtered = _filter_graph_by_context(_make_two_repo_graph(), ["cross_repo"])
+    assert set(filtered.edges()) == {("web::checkout", "pay::charge"), ("web::order", "pay::order")}
+
+
+def test_who_calls_question_reaches_a_caller_in_another_repo():
+    text = _query_graph_text(_make_two_repo_graph(), "who calls charge", mode="bfs", depth=1, token_budget=2000)
+    assert "Context: call (heuristic)" in text
+    assert "Checkout" in text

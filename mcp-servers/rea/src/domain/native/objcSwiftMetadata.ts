@@ -1,5 +1,6 @@
 import { objcClassSymbol } from "../objcClassSymbol.js";
 import { z } from "zod";
+import { knownCoverageStatusSchema } from "../coverage.js";
 import {
   BINARY_ARCHITECTURES,
   type BinaryTarget,
@@ -338,7 +339,11 @@ type SwiftSymbol = z.infer<typeof swiftSymbolSchema>;
 /** Per-facet coverage; empty arrays are meaningful only with this record. */
 export const nativeMetadataCoverageSchema = z.strictObject({
   facet: z.string().min(1),
-  status: z.enum(["complete", "partial", "unsupported", "not_requested"]),
+  status: z.enum([
+    ...knownCoverageStatusSchema.options,
+    "unsupported",
+    "not_requested",
+  ]),
   reason: z.string().nullable(),
   examined: z.int().nonnegative(),
   decoded: z.int().nonnegative(),
@@ -350,6 +355,11 @@ export const objcClassImportIdentitySchema = machoImportBindingSchema.omit({
 export const objcClassImportBindingCoverageSchema =
   nativeMetadataCoverageSchema.extend({
     facet: z.literal("objc_class_import_bindings"),
+    /** `unknown` when the caller did not state whether the candidates are complete. */
+    status: z.enum([
+      ...nativeMetadataCoverageSchema.shape.status.options,
+      "unknown",
+    ]),
     examined: z.number().int().nonnegative(),
     decoded: z.number().int().nonnegative(),
   });
@@ -368,12 +378,12 @@ export type ObjcClassDiscoveryCoverage = z.infer<
   typeof objcClassDiscoveryCoverageSchema
 >;
 
-/** Nominal Swift type kinds recorded by `__swift5_types` descriptors. */
+/** Nominal Swift type kinds recorded by `__swift5_types` and `__swift5_types2` descriptors. */
 export const swiftDeclKindSchema = z.enum(["class", "struct", "enum", "actor"]);
 
 /**
  * One nominal type context descriptor. `location` is the descriptor itself;
- * evidence cites its `__swift5_types` record. `qualified_name` is null when a
+ * evidence cites its type record by section. `qualified_name` is null when a
  * parent context is unresolved, rather than a shortened guess.
  */
 export const swiftDeclSchema = z.strictObject({
@@ -466,7 +476,7 @@ export const nativeDispatchMetadataInputSchema = z.strictObject({
   objc_class_import_addresses_complete: z
     .boolean()
     .describe(
-      "Whether the candidate addresses include every selected class-label row; false keeps binding coverage partial when the existing record budget truncates the scan.",
+      "Whether the candidate addresses include every selected class-label row. false keeps binding coverage partial when the existing record budget truncates the scan; omitted makes binding coverage unknown.",
     )
     .optional(),
   max_input_bytes: z
@@ -612,25 +622,21 @@ export const inspectNativeDispatchMetadata = (
     ivar_count: null,
     instance_size: null,
   }));
-  const decodedImplementations = [...implementations.values()].sort(
-    (left, right) =>
-      compareUnicodeCodePoints(
-        compositeKey([
-          left.class_name,
-          left.selector,
-          left.method_type,
-          left.implementation_address ?? "",
-          left.category ?? null,
-        ]),
-        compositeKey([
-          right.class_name,
-          right.selector,
-          right.method_type,
-          right.implementation_address ?? "",
-          right.category ?? null,
-        ]),
-      ),
-  );
+  const decodedImplementations = [...implementations.values()]
+    .map((implementation) => ({
+      implementation,
+      sortKey: compositeKey([
+        implementation.class_name,
+        implementation.selector,
+        implementation.method_type,
+        implementation.implementation_address ?? "",
+        implementation.category ?? null,
+      ]),
+    }))
+    .sort((left, right) =>
+      compareUnicodeCodePoints(left.sortKey, right.sortKey),
+    )
+    .map(({ implementation }) => implementation);
   const swift = swiftSymbols.length > 0;
 
   return objcSwiftMetadataSchema.parse({

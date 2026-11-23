@@ -1,3 +1,4 @@
+import { unknownTarget } from "../../domain/targetIdentity.js";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
@@ -7,7 +8,7 @@ import {
   resolvedAnalysisError,
   type AnalysisError,
 } from "../../domain/analysisErrorBase.js";
-import { analysisErrorWithCleanupFailure } from "../../domain/analysisErrorCleanup.js";
+import { analysisErrorWithCleanupDependencies } from "../../domain/analysisErrorCleanup.js";
 import { analysisErrorWithCancellation } from "../../domain/analysisErrorCancellation.js";
 import {
   AnalysisAccessDeniedError,
@@ -25,9 +26,9 @@ import {
   summarizeRetainedAnalysis,
   type AnalysisViewRetention,
 } from "../analysisView/AnalysisViewService.js";
-import { fridaCaptureLimitations } from "../../frida/fridaCaptureLimits.js";
-import { unknownFridaSession } from "./fridaInputErrors.js";
-import { FridaScriptLoadCancelledError } from "./FridaInstrumentationPort.js";
+import { fridaCaptureLimitations } from "../../domain/fridaCaptureLimits.js";
+import { unknownFridaSession } from "../../domain/fridaInputErrors.js";
+import { FridaScriptLoadCancelledError } from "../../ports/frida/FridaInstrumentationPort.js";
 import type {
   FridaDeviceList,
   FridaProcessList,
@@ -41,7 +42,7 @@ import type {
   FridaSessionObservation,
   FridaSessionStatus,
   StartFridaSessionInput,
-} from "./FridaInstrumentationPort.js";
+} from "../../ports/frida/FridaInstrumentationPort.js";
 
 type FridaSessionCloseResult = Awaited<
   ReturnType<FridaInstrumentationPort["closeSession"]>
@@ -138,15 +139,33 @@ export class FridaInstrumentationService {
 
   async listProcesses(
     selector: FridaDeviceSelector,
+    paging?: {
+      readonly limit?: number | undefined;
+      readonly offset?: number | undefined;
+    },
   ): Promise<Result<FridaProcessList, AnalysisError>> {
     const result = await this.#provider.listProcesses(selector);
-    return result.ok
-      ? ok({
-          device_id: result.value.deviceId,
-          processes: [...result.value.processes],
-          cleanup_error: result.value.cleanupError,
-        })
-      : result;
+    if (!result.ok) return result;
+    const all = result.value.processes;
+    const limit = paging?.limit;
+    const hasPaging = limit !== undefined || paging?.offset !== undefined;
+    const offset = paging?.offset ?? 0;
+    const processes = hasPaging
+      ? all
+          .toSorted((left, right) => left.pid - right.pid)
+          .slice(offset, limit === undefined ? undefined : offset + limit)
+      : [...all];
+    return ok({
+      device_id: result.value.deviceId,
+      processes,
+      ...(hasPaging
+        ? {
+            total_processes: all.length,
+            truncated: processes.length < all.length,
+          }
+        : {}),
+      cleanup_error: result.value.cleanupError,
+    });
   }
 
   async startSession(input: StartFridaSessionInput, signal?: AbortSignal) {
@@ -423,11 +442,11 @@ export class FridaInstrumentationService {
     const closed = await this.#provider.closeSession(sessionId);
     const failure = closed.ok
       ? resolvedAnalysisError(primary)
-      : analysisErrorWithCleanupFailure(
+      : analysisErrorWithCleanupDependencies(
           primary,
           closed.error,
           "instrument_with_frida",
-        ).bindCleanupDependencies([primary, closed.error]);
+        );
     return err(
       signal?.aborted
         ? analysisErrorWithCancellation(
@@ -454,7 +473,7 @@ const fridaEvidence = (
   script?: FridaScriptObservation,
 ): Evidence =>
   createEvidence(
-    undefined,
+    unknownTarget("not-observed"),
     { id: "frida", name: "Frida", version: null },
     {
       predicateType: "rea.frida.instrumentation-observation",

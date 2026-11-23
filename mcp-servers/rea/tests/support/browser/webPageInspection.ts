@@ -7,6 +7,7 @@ export interface WebPageScriptFixture {
   url: string;
   origin: string;
   cdpHash: string;
+  language?: string | null;
 }
 
 const origin = "https://app.example.test";
@@ -72,14 +73,22 @@ export const createWebPageInspection = (
     scripts: {
       total: scripts.length,
       items: scripts.map(
-        ({ source, scriptKey, url, origin: scriptOrigin, cdpHash }) => ({
+        ({
+          source,
+          scriptKey,
+          url,
+          origin: scriptOrigin,
+          cdpHash,
+          language = "JavaScript",
+        }) => ({
           script_key: scriptKey,
+          frame_id: null,
           url,
           origin: scriptOrigin,
           cdp_hash: cdpHash,
           length: Buffer.byteLength(source),
           is_module: true,
-          language: "JavaScript",
+          language,
           source_map_url: null,
           resource_reconciliation: {
             status: "unmatched",
@@ -120,6 +129,9 @@ export const createWebPageInspection = (
       session_storage_keys: [],
       indexed_db_names: [],
       cache_names: [],
+      content_fingerprints: [],
+      fingerprint_algorithm: "sha256",
+      fingerprints_complete: false,
       values_redacted: true,
     },
     limitations: [],

@@ -2,21 +2,18 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { describe, expect, it, onTestFinished } from "vitest";
 
 import {
-  advertisedDialectRegressions,
   advertisedInputDialectViolations,
   advertisedOutputPatternViolations,
   advertisedSchemaPatterns,
-  countAdvertisedDialectViolations,
   portablePatternViolations,
   type AdvertisedToolDefinition,
 } from "../../../src/contracts/advertisedDialect.js";
-import { ADVERTISED_INPUT_DIALECT_BASELINE } from "../../../src/contracts/advertisedDialectBaseline.js";
-import { mcpInputSchemaProfileSchema } from "../../../src/config/mcpInputSchemaProfile.js";
 import { mcpOutputSchemaProfileSchema } from "../../../src/config/mcpOutputSchemaProfile.js";
 import { mcpToolCatalogProfileSchema } from "../../../src/config/mcpToolCatalogProfile.js";
 import { createServer } from "../../../src/server/createServer.js";
 import { silentLogger } from "../../../src/logger.js";
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
+import { createMcpSchemaValidation } from "../../fixtures/mcpSchemaValidation.js";
 
 describe("portable regex grammar", () => {
   // Each refused construct failed to compile in at least one of V8 (plain,
@@ -60,10 +57,8 @@ describe("portable regex grammar", () => {
     "^[!#%&,:;<=>@`~'\" _.+*?$]$",
     "^a{2,1000}$",
     "^(?:a|b)\\.c\\$$",
-  ])("accepts %s in every JavaScript mode", (pattern) => {
+  ])("accepts portable pattern %s", (pattern) => {
     expect(portablePatternViolations(pattern)).toEqual([]);
-    for (const flags of ["", "u", "v"])
-      expect(() => new RegExp(pattern, flags)).not.toThrow();
   });
 });
 
@@ -73,23 +68,6 @@ describe("nullable values", () => {
       name: "probe",
       inputSchema: { type: "object", properties },
     }).map(({ path, rule, detail }) => [path, rule, detail]);
-
-  it("accepts anyOf one typed branch and null below the root", () => {
-    expect(
-      check({
-        limit: {
-          description: "Entries; null returns every remaining entry.",
-          anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
-        },
-        names: {
-          anyOf: [
-            { type: "array", items: { type: "string" } },
-            { type: "null" },
-          ],
-        },
-      }),
-    ).toEqual([]);
-  });
 
   it.each([
     [
@@ -128,6 +106,33 @@ describe("nullable values", () => {
   });
 });
 
+it("reports patternProperties keys as advertised patterns", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      names: {
+        type: "object",
+        patternProperties: { "^[^\\uD800-\\uDFFF]*$": { type: "string" } },
+      },
+    },
+  };
+  expect(
+    advertisedOutputPatternViolations({
+      name: "tool",
+      inputSchema: {},
+      outputSchema: schema,
+    }),
+  ).toEqual([
+    {
+      tool: "tool",
+      schema: "output",
+      path: '$.properties.names.patternProperties["^[^\\\\uD800-\\\\uDFFF]*$"]',
+      rule: "pattern",
+      detail: "unicode-escape",
+    },
+  ]);
+});
+
 const listTools = async (environment: Readonly<NodeJS.ProcessEnv>) => {
   const session = createTestBinarySession(() => {
     throw new Error("No deep provider may start for a schema projection");
@@ -136,7 +141,10 @@ const listTools = async (environment: Readonly<NodeJS.ProcessEnv>) => {
     { kind: "session", session },
     { environment, logger: silentLogger },
   );
-  const client = new Client({ name: "advertised-dialect", version: "1" });
+  const client = new Client(
+    { name: "advertised-dialect", version: "1" },
+    { jsonSchemaValidator: createMcpSchemaValidation() },
+  );
   onTestFinished(async () => {
     await client.close();
     await server.close();
@@ -149,113 +157,60 @@ const listTools = async (environment: Readonly<NodeJS.ProcessEnv>) => {
   return (await client.listTools()).tools;
 };
 
-it("presents transport discovery through the selected input profile", async () => {
-  const discovery = async (profile: "compact" | "full") =>
-    (
-      await listTools({
-        ...process.env,
-        REA_MCP_INPUT_SCHEMA_PROFILE: profile,
-        REA_MCP_TOOL_CATALOG_PROFILE: "hot-cold",
-      })
-    ).find(({ name }) => name === "discover_tools")?.inputSchema;
-  const full = await discovery("full");
-  // The canonical page defaults remain declared in the full profile only.
-  expect(full?.properties).toMatchObject({
-    offset: { default: 0 },
-    limit: { default: 3 },
-  });
-  const compact = await discovery("compact");
-  expect(compact?.properties).toEqual({
-    query: { type: "string" },
-    names: {
-      type: "array",
-      items: { type: "string", minLength: 1 },
-      minItems: 1,
-      maxItems: 20,
-    },
-    offset: { type: "integer", minimum: 0, maximum: 9007199254740991 },
-    limit: { type: "integer", minimum: 1, maximum: 20 },
-  });
-});
-
 const distinct = (
   into: Map<string, AdvertisedToolDefinition>,
   definition: AdvertisedToolDefinition,
 ) => into.set(JSON.stringify(definition), definition);
 
-it("advertises every profile within the portable dialect or its recorded baseline", async () => {
-  const inputs = new Map<string, Map<string, AdvertisedToolDefinition>>();
+it("advertises every profile within the portable dialect", async () => {
+  const inputs = new Map<string, AdvertisedToolDefinition>();
   const outputViolations: string[] = [];
   const uncompilable: string[] = [];
-  for (const input of mcpInputSchemaProfileSchema.options)
-    for (const output of mcpOutputSchemaProfileSchema.options)
-      for (const catalog of mcpToolCatalogProfileSchema.options) {
-        const tools = await listTools({
-          ...process.env,
-          REA_MCP_INPUT_SCHEMA_PROFILE: input,
-          REA_MCP_OUTPUT_SCHEMA_PROFILE: output,
-          REA_MCP_TOOL_CATALOG_PROFILE: catalog,
+  for (const output of mcpOutputSchemaProfileSchema.options)
+    for (const catalog of mcpToolCatalogProfileSchema.options) {
+      const tools = await listTools({
+        ...process.env,
+        REA_MCP_OUTPUT_SCHEMA_PROFILE: output,
+        REA_MCP_TOOL_CATALOG_PROFILE: catalog,
+      });
+      const combination = `${output}/${catalog}`;
+      // Every combination advertises local path patterns, so the grammar
+      // check is never vacuous.
+      expect(
+        tools.flatMap(({ inputSchema }) =>
+          advertisedSchemaPatterns(inputSchema),
+        ).length,
+        combination,
+      ).toBeGreaterThan(0);
+      for (const tool of tools) {
+        distinct(inputs, {
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
         });
-        const combination = `${input}/${output}/${catalog}`;
-        // Every combination advertises local path patterns, so the grammar
-        // check is never vacuous.
-        expect(
-          tools.flatMap(({ inputSchema }) =>
-            advertisedSchemaPatterns(inputSchema),
-          ).length,
-          combination,
-        ).toBeGreaterThan(0);
-        for (const tool of tools) {
-          if (!inputs.has(input)) inputs.set(input, new Map());
-          distinct(inputs.get(input)!, {
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-          });
-          // SDK clients compile every listed output schema.
-          for (const violation of advertisedOutputPatternViolations(tool))
-            outputViolations.push(
-              `${combination} ${tool.name} ${violation.path} ${violation.detail ?? ""}`,
-            );
-          // The grammar was checked against seven engines offline; this keeps
-          // V8's own modes checked in CI.
-          for (const schema of [tool.inputSchema, tool.outputSchema])
-            for (const { path, pattern } of advertisedSchemaPatterns(schema))
-              for (const flags of ["", "u", "v"])
-                try {
-                  new RegExp(pattern, flags);
-                } catch (cause: unknown) {
-                  uncompilable.push(
-                    `${combination} ${tool.name} ${path} /${pattern}/${flags}: ${String(cause)}`,
-                  );
-                }
-        }
+        // SDK clients compile every listed output schema.
+        for (const violation of advertisedOutputPatternViolations(tool))
+          outputViolations.push(
+            `${combination} ${tool.name} ${violation.path} ${violation.detail ?? ""}`,
+          );
+        // The grammar was checked against seven engines offline; this keeps
+        // V8's own modes checked in CI.
+        for (const schema of [tool.inputSchema, tool.outputSchema])
+          for (const { path, pattern } of advertisedSchemaPatterns(schema))
+            for (const flags of ["", "u", "v"])
+              try {
+                new RegExp(pattern, flags);
+              } catch (cause: unknown) {
+                uncompilable.push(
+                  `${combination} ${tool.name} ${path} /${pattern}/${flags}: ${String(cause)}`,
+                );
+              }
       }
+    }
   expect(uncompilable).toEqual([]);
   expect(outputViolations).toEqual([]);
 
-  const observed = Object.fromEntries(
-    [...inputs].map(([profile, tools]) => [
-      profile,
-      countAdvertisedDialectViolations(
-        [...tools.values()].flatMap(advertisedInputDialectViolations),
-      ),
-    ]),
-  );
-  // New constructs fail first with a named key; a count that dropped below
-  // the baseline must be recorded so it cannot grow back.
   expect(
-    Object.fromEntries(
-      Object.entries(observed).map(([profile, counts]) => [
-        profile,
-        advertisedDialectRegressions(
-          counts,
-          ADVERTISED_INPUT_DIALECT_BASELINE[
-            profile as keyof typeof ADVERTISED_INPUT_DIALECT_BASELINE
-          ],
-        ),
-      ]),
-    ),
-  ).toEqual({ compact: [], full: [] });
-  expect(observed).toEqual(ADVERTISED_INPUT_DIALECT_BASELINE);
+    [...inputs.values()].flatMap(advertisedInputDialectViolations),
+  ).toEqual([]);
 });

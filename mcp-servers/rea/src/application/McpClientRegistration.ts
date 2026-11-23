@@ -1,12 +1,11 @@
-import { constants } from "node:fs";
-import { lstat, mkdir, open, stat } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
+import { HOST_PLATFORM } from "../platform/HostPlatform.js";
 import { dirname } from "node:path";
 
 import {
-  AnalysisCleanupLease,
   AnalysisCleanupLeaseGroup,
-} from "../artifacts/AnalysisCleanupLease.js";
-import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
+  ArtifactResourceScope,
+} from "../resources/index.js";
 import {
   AnalysisCancelledError,
   cancelledBy,
@@ -19,42 +18,42 @@ import {
   sameRegularFileState,
   RegularFileChangedError,
 } from "../filesystem/RegularFile.js";
-import { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
 import { writeClientRegistrationBackup } from "./ClientRegistrationBackup.js";
 import { resolveClientConfigTransactionPath } from "./ClientConfigPath.js";
+import {
+  ClientPrivateProfileError,
+  privateProfilePermissions,
+  PRIVATE_PROFILE_MODES,
+  type PrivateProfilePermissions,
+  securePrivateDirectory,
+} from "./ClientPrivateProfile.js";
 import {
   ClientConfigurationPublicationFailure,
   isClientConfigurationCleanupFailure,
   retryClientConfigurationCleanup,
 } from "./ClientConfigurationCleanup.js";
-import { clientConfigurationValuesEqual } from "./ClientConfigurationDocument.js";
-import { ClientConfigurationPublication } from "./ClientConfigurationPublication.js";
+import { clientConfigurationValuesEqual } from "./ClientConfigurationValues.js";
+import {
+  ClientConfigurationPathError,
+  ClientConfigurationPublication,
+} from "./ClientConfigurationPublication.js";
 import { withClientConfigurationTransaction } from "./ClientConfigurationTransaction.js";
 import {
   prepareRegistration,
+  type PreparedRegistration,
   verifyEffectiveRegistration,
 } from "./McpRegistrationConfiguration.js";
 import type { McpRegistrationClient } from "./McpRegistrationCatalog.js";
 import {
   readRegularFileText,
   readRegularFileTextSnapshot,
-} from "./RegularFileRead.js";
+} from "../process/RegularFileRead.js";
+import { errorMessage } from "../kernel/errorMessage.js";
 
 export interface McpClientRegistrationReceipt {
   readonly status: "configured" | "unchanged";
   readonly backupPath?: string;
-  readonly permissions?:
-    | {
-        readonly kind: "verified_posix_modes";
-        readonly directoryMode: 0o700;
-        readonly fileMode: 0o600;
-      }
-    | {
-        readonly kind: "requested_windows_modes";
-        readonly requestedDirectoryMode: 0o700;
-        readonly requestedFileMode: 0o600;
-        readonly aclVerification: "unavailable";
-      };
+  readonly permissions?: PrivateProfilePermissions;
 }
 export type McpClientRegistrationFailure =
   | ConfigurationError
@@ -93,6 +92,8 @@ export const registerMcpClients = async (
   launcher: ClientRegistrationCommand,
   signal: AbortSignal | undefined,
   resources: ArtifactResourceScope,
+  /** The host the clients were resolved for; it decides document semantics. */
+  platform: NodeJS.Platform,
 ): Promise<readonly McpClientRegistrationOutcome[]> => {
   const outcomes: McpClientRegistrationOutcome[] = [];
   let cancelled = false;
@@ -106,7 +107,13 @@ export const registerMcpClients = async (
       outcomes.push({ ...labels, status: "not_started" });
       continue;
     }
-    const result = await registerMcpClient(client, launcher, signal, resources);
+    const result = await registerMcpClient(
+      client,
+      launcher,
+      signal,
+      resources,
+      platform,
+    );
     outcomes.push({ ...labels, status: "completed", result });
     cancelled =
       signal?.aborted === true ||
@@ -124,6 +131,7 @@ export const registerMcpClient = async (
   launcher: ClientRegistrationCommand,
   signal: AbortSignal | undefined,
   resources: ArtifactResourceScope,
+  platform: NodeJS.Platform,
 ): Promise<
   Result<McpClientRegistrationReceipt, McpClientRegistrationFailure>
 > => {
@@ -141,21 +149,40 @@ export const registerMcpClient = async (
         },
       });
   };
+  const retainFailure = (failure: McpClientRegistrationFailure) => {
+    if (backupPath !== undefined)
+      failure.retainPrimaryDiagnostics({ backup_path: backupPath });
+    if (signal?.aborted === true)
+      analysisErrorWithCancellation(
+        failure,
+        cancelledBy("MCP registration", signal),
+      );
+    return err(failure);
+  };
   try {
     checkCancellation();
-    // The caller supplies canonical argv, not a native client-shaped entry.
+    // The caller supplies canonical argv rather than a native client-shaped entry.
     if (launcher.command.length === 0)
-      throw new ConfigurationError(
-        "The registration needs a nonempty executable.",
+      return retainFailure(
+        new ConfigurationError("The registration needs a nonempty executable."),
       );
     const path = await resolveClientConfigTransactionPath(settingsPath);
     if (path === undefined)
-      throw new ConfigurationError(
-        `Client settings path could not be verified: ${settingsPath}`,
+      return retainFailure(
+        new ConfigurationError(
+          `Client settings path could not be verified: ${settingsPath}`,
+        ),
       );
     return await withClientConfigurationTransaction(path, async () => {
       checkCancellation();
-      const prepared = await prepareRegistration(path, client, launcher);
+      const preparation = await prepareRegistration(
+        path,
+        client,
+        launcher,
+        platform,
+      );
+      if (!preparation.ok) return retainFailure(preparation.error);
+      const prepared = preparation.value;
       const { snapshot, original, contents } = prepared;
       checkCancellation();
       const unchanged = await unchangedRegistration(
@@ -163,26 +190,34 @@ export const registerMcpClient = async (
         checkCancellation,
         resources,
       );
+      if (!unchanged.ok) return retainFailure(unchanged.error);
       checkCancellation();
-      if (unchanged !== undefined) return ok(unchanged);
+      if (unchanged.value !== undefined) return ok(unchanged.value);
       if (original !== undefined) {
         const backup = await writeClientRegistrationBackup(path, original);
         if (!backup.ok)
-          throw new ConfigurationError(backup.error.detail, {
-            diagnostics: {
-              settings_path: settingsPath,
-              backup_path: backup.error.path,
-            },
-          });
+          return retainFailure(
+            new ConfigurationError(backup.error.detail, {
+              diagnostics: {
+                settings_path: settingsPath,
+                backup_path: backup.error.path,
+              },
+            }),
+          );
         backupPath = backup.value;
       }
       checkCancellation();
       await mkdir(dirname(path), {
         recursive: true,
-        ...(client.privateProfile !== undefined ? { mode: 0o700 } : {}),
+        ...(client.privateProfile !== undefined
+          ? { mode: PRIVATE_PROFILE_MODES.directory }
+          : {}),
       });
       checkCancellation();
-      if (client.privateProfile !== undefined && process.platform !== "win32")
+      if (
+        client.privateProfile !== undefined &&
+        HOST_PLATFORM.platform !== "win32"
+      )
         await securePrivateDirectory(
           dirname(path),
           client.privateProfile.home,
@@ -198,19 +233,25 @@ export const registerMcpClient = async (
           requestedPath: settingsPath,
           state: snapshot?.state,
           ...(client.privateProfile !== undefined
-            ? { requiredMode: 0o600 as const }
+            ? { requiredMode: PRIVATE_PROFILE_MODES.file }
             : {}),
         },
       );
       // Cancellation cannot abandon published bytes, verification or retained cleanup.
-      await verifyRegistration(publication, prepared, backupPath, resources);
+      const verified = await verifyRegistration(
+        publication,
+        prepared,
+        backupPath,
+        resources,
+      );
+      if (!verified.ok) return retainFailure(verified.error);
       configured = true;
       checkCancellation();
       return ok({
         status: "configured",
         ...(backupPath === undefined ? {} : { backupPath }),
         ...(client.privateProfile !== undefined
-          ? { permissions: privateProfilePermissions() }
+          ? { permissions: privateProfilePermissions(HOST_PLATFORM.platform) }
           : {}),
       });
     });
@@ -223,12 +264,7 @@ export const registerMcpClient = async (
       backupPath,
       configured,
     });
-    if (signal?.aborted === true)
-      analysisErrorWithCancellation(
-        failure,
-        cancelledBy("MCP registration", signal),
-      );
-    return err(failure);
+    return retainFailure(failure);
   }
 };
 
@@ -242,12 +278,16 @@ const registrationFailure = async (
   },
 ): Promise<ConfigurationError> => {
   const { backupPath, configured } = progress;
-  if (cause instanceof ConfigurationError) return cause;
+  if (
+    cause instanceof ClientPrivateProfileError ||
+    cause instanceof ClientConfigurationPathError
+  )
+    return cause;
   const cleanup = isClientConfigurationCleanupFailure(cause)
     ? await retryClientConfigurationCleanup(cause, resources)
     : undefined;
   const primary = cleanup?.primary ?? cause;
-  const detail = primary instanceof Error ? primary.message : String(primary);
+  const detail = errorMessage(primary);
   const error = new ConfigurationError(
     `Could not register MCP settings at ${path}: ${detail}`,
     {
@@ -267,19 +307,21 @@ const registrationFailure = async (
 
 /** A semantic no-op is usable only while the admitted physical snapshot remains current. */
 const unchangedRegistration = async (
-  prepared: Awaited<ReturnType<typeof prepareRegistration>>,
+  prepared: PreparedRegistration,
   checkCancellation: () => void,
   resources: ArtifactResourceScope,
-): Promise<McpClientRegistrationReceipt | undefined> => {
+): Promise<
+  Result<McpClientRegistrationReceipt | undefined, ConfigurationError>
+> => {
   const { client, path, snapshot, parsed, updated } = prepared;
   if (
     parsed.requiresRewrite === true ||
     !clientConfigurationValuesEqual(parsed.document, updated) ||
     (client.privateProfile !== undefined &&
-      process.platform !== "win32" &&
-      ((snapshot?.state.mode ?? 0) & 0o777) !== 0o600)
+      HOST_PLATFORM.platform !== "win32" &&
+      ((snapshot?.state.mode ?? 0) & 0o777) !== PRIVATE_PROFILE_MODES.file)
   )
-    return undefined;
+    return ok(undefined);
   const current = await readRegularFileTextSnapshot(path, {
     symlinks: "reject",
   });
@@ -290,9 +332,10 @@ const unchangedRegistration = async (
   )
     throw new RegularFileChangedError(path);
   checkCancellation();
-  await verifyEffectiveRegistration(prepared, current.text);
+  const verified = await verifyEffectiveRegistration(prepared, current.text);
+  if (!verified.ok) return verified;
   const permissionsChanged =
-    client.privateProfile !== undefined && process.platform !== "win32"
+    client.privateProfile !== undefined && HOST_PLATFORM.platform !== "win32"
       ? await securePrivateDirectory(
           dirname(path),
           client.privateProfile.home,
@@ -300,42 +343,49 @@ const unchangedRegistration = async (
           resources,
         )
       : false;
-  return {
+  return ok({
     status: permissionsChanged ? "configured" : "unchanged",
     ...(client.privateProfile !== undefined
-      ? { permissions: privateProfilePermissions() }
+      ? { permissions: privateProfilePermissions(HOST_PLATFORM.platform) }
       : {}),
-  };
+  });
 };
 
 const verifyRegistration = async (
   publication: ClientConfigurationPublication,
-  prepared: Awaited<ReturnType<typeof prepareRegistration>>,
+  prepared: PreparedRegistration,
   backupPath: string | undefined,
   resources: ArtifactResourceScope,
-): Promise<void> => {
+): Promise<Result<void, ConfigurationError>> => {
   const { original, client } = prepared;
   const settingsPath = client.configPath;
-  await publication.verify(async () => {
+  return publication.verifyResult(async () => {
+    let verified: Result<void, ConfigurationError>;
     try {
       const readback = await readRegularFileText(publication.path, {
         symlinks: "reject",
       });
       await publication.assertCurrent(readback);
-      await verifyEffectiveRegistration(prepared, readback);
+      verified = await verifyEffectiveRegistration(prepared, readback);
     } catch (cause: unknown) {
       if (cause instanceof RegularFileChangedError || isMissing(cause))
         throw cause;
-      const failure = await registrationFailure(
-        cause,
-        settingsPath,
-        resources,
-        { backupPath, configured: false },
+      verified = err(
+        await registrationFailure(cause, settingsPath, resources, {
+          backupPath,
+          configured: false,
+        }),
       );
-      try {
-        await publication.restore(original);
-      } catch (rollbackCause: unknown) {
-        throw new ConfigurationError(
+    }
+    if (verified.ok) return verified;
+    const failure = verified.error;
+    if (backupPath !== undefined)
+      failure.retainPrimaryDiagnostics({ backup_path: backupPath });
+    try {
+      await publication.restore(original);
+    } catch (rollbackCause: unknown) {
+      return err(
+        new ConfigurationError(
           "Client settings verification failed and restoration could not be verified",
           {
             cause: rollbackCause,
@@ -345,101 +395,9 @@ const verifyRegistration = async (
               ...(backupPath === undefined ? {} : { backup_path: backupPath }),
             },
           },
-        );
-      }
-      throw failure;
+        ),
+      );
     }
+    return verified;
   });
 };
-
-/** fx's profile permissions are applied through the selected directory descriptor. */
-const securePrivateDirectory = async (
-  path: string,
-  home: string,
-  checkCancellation: () => void,
-  resources: ArtifactResourceScope,
-): Promise<boolean> => {
-  const owner = new OwnedFileHandle(
-    await open(
-      path,
-      constants.O_RDONLY |
-        (constants.O_DIRECTORY ?? 0) |
-        (constants.O_NOFOLLOW ?? 0),
-    ),
-  );
-  const lease = AnalysisCleanupLease.forCloseOwner(owner, path);
-  let primary: unknown;
-  let changed = false;
-  try {
-    const before = await owner.handle.stat();
-    const named = await lstat(path);
-    if (
-      !before.isDirectory() ||
-      named.isSymbolicLink() ||
-      before.ino === 0 ||
-      before.dev !== named.dev ||
-      before.ino !== named.ino ||
-      !named.isDirectory()
-    )
-      throw new RegularFileChangedError(path);
-    // A linked parent can make a profile path name the home folder itself.
-    const homeFolder = await stat(home);
-    if (homeFolder.dev === before.dev && homeFolder.ino === before.ino)
-      throw new ConfigurationError(
-        `The private profile folder ${path} is the home folder; REA will not make the home folder private. Point the client at its own profile folder; no settings were written.`,
-      );
-    changed = (before.mode & 0o777) !== 0o700;
-    checkCancellation();
-    if (changed) await owner.handle.chmod(0o700);
-    const after = await owner.handle.stat();
-    const current = await lstat(path);
-    if (
-      (after.mode & 0o777) !== 0o700 ||
-      current.isSymbolicLink() ||
-      !current.isDirectory() ||
-      current.dev !== after.dev ||
-      current.ino !== after.ino
-    )
-      throw new RegularFileChangedError(path);
-  } catch (cause: unknown) {
-    primary = cause;
-  }
-  try {
-    await lease.release();
-  } catch (cause: unknown) {
-    const error = new ConfigurationError(
-      `Private client directory cleanup failed at ${path}`,
-      {
-        cause:
-          primary === undefined
-            ? cause
-            : new AggregateError(
-                [primary, cause],
-                "Private profile permission operation and directory cleanup failed",
-              ),
-        cleanup: {
-          reason: "Private profile directory handle could not be closed",
-          resources: [path],
-        },
-      },
-    );
-    new AnalysisCleanupLeaseGroup(error, [lease]);
-    resources.retain({ kind: "lease", resource: path, lease });
-    throw error;
-  }
-  if (primary !== undefined) throw primary;
-  return changed;
-};
-
-/** Mode requests cannot establish Windows ACL privacy. */
-const privateProfilePermissions = (): NonNullable<
-  McpClientRegistrationReceipt["permissions"]
-> =>
-  process.platform === "win32"
-    ? {
-        kind: "requested_windows_modes",
-        requestedDirectoryMode: 0o700,
-        requestedFileMode: 0o600,
-        aclVerification: "unavailable",
-      }
-    : { kind: "verified_posix_modes", directoryMode: 0o700, fileMode: 0o600 };

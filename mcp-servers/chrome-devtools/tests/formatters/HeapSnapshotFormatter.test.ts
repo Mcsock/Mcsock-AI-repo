@@ -13,14 +13,14 @@ import {
   type ContextAnalysisReport,
   formatName,
   HeapSnapshotFormatter,
-  MAX_NAME_LENGTH,
 } from '../../src/formatters/HeapSnapshotFormatter.js';
+import {MAX_NAME_LENGTH} from '../../src/formatters/constants.js';
 import {
   HeapSnapshotManager,
   type HeapSnapshotAggregate,
   type HeapSnapshotDiffObject,
 } from '../../src/processors/HeapSnapshotManager.js';
-import {DevTools} from '../../src/third_party/index.js';
+import {DevTools} from '../../src/third_party/browser.js';
 import {parseByteSizeRange} from '../../src/utils/bytes.js';
 import {TaskRunner} from '../../src/utils/TaskRunner.js';
 import {createMockContextAnalysisResult} from '../mocks.js';

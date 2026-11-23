@@ -1,24 +1,25 @@
+import { decodeStrictUtf8 } from "../domain/strictUtf8.js";
 import * as t from "@babel/types";
 import { createHash } from "node:crypto";
-import { decodeValidatedSourceMapLeaves } from "../javascript/sourceMaps/DecodedSourceMap.js";
+import { decodeValidatedSourceMapLeaves } from "../domain/decodedSourceMap.js";
 
 import { sanitizeBrowserUrl } from "../domain/browserObservation.js";
 import {
   AnalysisCancelledError,
-  AnalysisResourceConstraintError,
   isAborted,
   cancelledBy,
   carriedReason,
 } from "../domain/analysisErrorCore.js";
-import {
-  AnalysisError,
-  type AnalysisErrorOptions,
-} from "../domain/analysisErrorBase.js";
+import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { isUrlLikeModuleSpecifier } from "../domain/webBundleAnalyzerAst.js";
+import { unwrapJavaScriptExpression } from "../domain/javascript/javascriptAstValues.js";
 import { analyzeParsedJavaScriptReferences } from "../domain/javascript/javascriptSemanticAnalysis.js";
 import { traverseJavaScriptAst } from "../domain/javascript/javascriptSemanticTraversal.js";
-import { parseJavaScriptSource } from "../domain/javascript/javascriptSourceParser.js";
+import {
+  isTypeScriptSourcePath,
+  parseJavaScriptSource,
+} from "../domain/javascript/javascriptSourceParser.js";
 import {
   semanticStaticModuleSource,
   semanticImportEqualsSpecifier,
@@ -47,19 +48,23 @@ import {
   isSourceMapSectionOverlap,
   sourceMapLimitFailure,
   type SourceMapLeaf,
-} from "../javascript/sourceMaps/SourceMapFormat.js";
+} from "../domain/sourceMapFormat.js";
 import {
   malformedInput,
   type ParseFailureError,
 } from "../domain/parseFailure.js";
+import { parseLimitConstraint } from "../domain/parseFailureAnalysisError.js";
 import { selectedBrowserDeadlineMs } from "../domain/browserDeadline.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
+import { AnalysisCleanupRelease } from "../domain/analysisCleanupRelease.js";
 import {
   selectedSourceMapLimits,
   sourceMapLimitRecovery,
   type SourceMapLimits,
 } from "../domain/sourceMapLimits.js";
+import { errorMessage } from "../kernel/errorMessage.js";
+import { sha256Hex } from "../kernel/sha256Hex.js";
 
 export interface WebSourceMapRequest {
   readonly scriptKey: string;
@@ -317,14 +322,19 @@ class SourceMapCallerAbort extends Error {
 const sourceMapCallerReason = (value: unknown): unknown =>
   value instanceof SourceMapCallerAbort ? value.reason : value;
 
-class SourceMapSizeLimitError extends Error {
-  constructor(maxBytes: number) {
-    super(
-      `Source-map response exceeded its retained budget. ${sourceMapLimitRecovery("fetch_bytes", maxBytes)}`,
-    );
-    this.name = "SourceMapSizeLimitError";
-  }
-}
+const sourceMapSizeLimitError = (
+  maxBytes: number,
+): ParseFailureError<"limit"> =>
+  sourceMapLimitFailure(
+    "Source-map response exceeded its retained budget.",
+    "fetch_bytes",
+    maxBytes,
+  );
+
+const isSourceMapSizeLimitError = (
+  cause: unknown,
+): cause is ParseFailureError<"limit"> =>
+  isSourceMapLimit(cause) && cause.failure.limit.name === "fetch_bytes";
 
 class SourceMapRedirectLocationError extends Error {
   constructor(url: string, location: string) {
@@ -340,6 +350,8 @@ class SourceMapResponseCleanup extends Error {
   readonly failure: AnalysisError;
   readonly completion: Promise<void>;
   #resource: { url: string; body: ReadableStream<Uint8Array> } | undefined;
+  /** Confirmed once the reader's cancellation completes and its lock is released. */
+  readonly #released = new AnalysisCleanupRelease();
 
   get cleanupResources(): readonly string[] {
     return this.#resource === undefined ? [] : [this.#resource.url];
@@ -371,11 +383,11 @@ class SourceMapResponseCleanup extends Error {
         : new ProviderAdapterError("rea-cdp-browser", "analyze_web_bundle", {
             cause,
             cleanup,
-            userMessage: cause instanceof Error ? cause.message : String(cause),
+            userMessage: errorMessage(cause),
           });
-    this.failure.bindCleanupResourceOwner(this);
+    this.#released.bind(this.failure.bindCleanupResourceOwner(this));
     const failed = (cause: unknown): void => {
-      reason = `Source-map response cancellation failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      reason = `Source-map response cancellation failed: ${errorMessage(cause)}`;
       this.failure.retainSecondaryFailure(
         new ProviderCleanupError(
           "rea-cdp-browser",
@@ -409,7 +421,7 @@ class SourceMapResponseCleanup extends Error {
           reader.releaseLock();
           reason = "Source-map response cancellation completed.";
           this.#resource = undefined;
-          this.failure.resolveCleanup();
+          this.#released.confirm();
         } catch (cause: unknown) {
           failed(cause);
         }
@@ -431,6 +443,8 @@ class SourceMapPendingFetch extends Error {
   readonly failure: AnalysisError;
   readonly settled: Promise<void>;
   #resource: { url: string; response?: Response } | undefined;
+  /** Confirmed once the late response and any body it carries are released. */
+  readonly #released = new AnalysisCleanupRelease();
 
   get cleanupResources(): readonly string[] {
     return this.#resource === undefined ? [] : [this.#resource.url];
@@ -459,10 +473,10 @@ class SourceMapPendingFetch extends Error {
             carriedReason(sourceMapCallerReason(reason)),
             { cleanup },
           );
-    this.failure.bindCleanupResourceOwner(this);
+    this.#released.bind(this.failure.bindCleanupResourceOwner(this));
     const finished = (): void => {
       this.#resource = undefined;
-      this.failure.resolveCleanup();
+      this.#released.confirm();
     };
     this.settled = promise.then(
       async (response) => {
@@ -600,11 +614,11 @@ const fetchOne = async (
         await cancelUnreadResponse(response, fetchedUrl, cause, signal);
       } catch (cleanupCause: unknown) {
         if (isSourceMapLimit(cause)) {
-          const error = sourceMapOutputError(
+          const error = parseLimitConstraint(
+            "analyze_web_bundle",
+            "transport",
             cause,
-            budget.decodedRecords.limits,
             {
-              cause,
               cleanup: {
                 reason:
                   "Source-map response cancellation is incomplete after its output exceeded capacity.",
@@ -622,19 +636,23 @@ const fetchOne = async (
       }
       throw cause;
     }
-    if (!response.ok) {
+    // This request asks for the whole map. Even valid JSON inside a byte
+    // range does not establish the complete source-map representation.
+    if (!response.ok || response.status === 206) {
+      const limitation =
+        response.status === 206
+          ? "Source-map server returned HTTP 206 (Partial Content). A complete map response is required."
+          : `Source-map server returned HTTP ${String(response.status)}.`;
       await cancelUnreadResponse(
         response,
         fetchedUrl,
-        new Error(
-          `Source-map server returned HTTP ${String(response.status)}.`,
-        ),
+        new Error(limitation),
         signal,
       );
       return emptySourceMapItem(
         request,
         "fetch_failed",
-        `Source-map server returned HTTP ${String(response.status)}.`,
+        limitation,
         fetchedUrl,
       );
     }
@@ -666,9 +684,8 @@ const fetchOne = async (
     );
     completedResponseIdentity = body.responseIdentity;
     if (!body.text.ok)
-      return emptySourceMapItem(
+      return invalidSourceMapItem(
         request,
-        "invalid",
         body.text.error.message,
         effectiveUrl,
         body.responseIdentity,
@@ -711,7 +728,8 @@ const fetchOne = async (
     const cause =
       caught instanceof SourceMapResponseCleanup ? caught.cause : caught;
     if (cause instanceof AnalysisError) throw cause;
-    if (isSourceMapLimit(cause)) throw cause;
+    if (isSourceMapLimit(cause) && !isSourceMapSizeLimitError(cause))
+      throw cause;
     if (
       signal?.aborted === true &&
       !(signal.reason instanceof SourceMapDeadlineError)
@@ -721,7 +739,7 @@ const fetchOne = async (
       request,
       "fetch_failed",
       cause instanceof SourceMapRedirectLocationError ||
-        cause instanceof SourceMapSizeLimitError ||
+        isSourceMapSizeLimitError(cause) ||
         cause instanceof SourceMapDeadlineError
         ? cause.message
         : "Source-map fetch or validation failed.",
@@ -840,7 +858,7 @@ const readBoundedText = async (
       if (done) break;
       const nextBytes = value?.byteLength ?? 0;
       if (budget.retainedBytes + bytes + nextBytes > maxBytes) {
-        throw new SourceMapSizeLimitError(maxBytes);
+        throw sourceMapSizeLimitError(maxBytes);
       }
       if (value !== undefined) chunks.push(value);
       bytes += nextBytes;
@@ -872,7 +890,7 @@ const readBoundedText = async (
       signal,
       sourceMapCallerReason(cause),
     );
-    if (cause instanceof SourceMapSizeLimitError) {
+    if (isSourceMapSizeLimitError(cause)) {
       try {
         // Preserve the size-limit item's existing finalization boundary.
         const completion = cleanup.completion;
@@ -905,17 +923,13 @@ const readBoundedText = async (
     offset += chunk.byteLength;
   }
   const responseIdentity: ResponseIdentity = {
-    sha256: createHash("sha256").update(joined).digest("hex"),
+    sha256: sha256Hex(joined),
     bytes,
     representation: "fetch-response-body-bytes",
   };
   try {
     return {
-      text: ok(
-        new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-          joined,
-        ),
-      ),
+      text: ok(decodeStrictUtf8(joined, "preserve")),
       responseIdentity,
     };
   } catch (cause: unknown) {
@@ -1040,9 +1054,8 @@ const normalizeSourceMap = (
     );
   const parsedJson = safeParseJson(sourceMapJsonText(text));
   if (!parsedJson.ok)
-    return emptySourceMapItem(
+    return invalidSourceMapItem(
       request,
-      "invalid",
       "Source-map JSON is not a version 3 map.",
       fetchedUrl,
       responseIdentity,
@@ -1211,9 +1224,8 @@ const normalizeSourceMap = (
       cause instanceof SourceMapDeadlineError
     )
       throw cause;
-    return emptySourceMapItem(
+    return invalidSourceMapItem(
       request,
-      "invalid",
       isSourceMapSectionOverlap(cause)
         ? cause.message
         : "Source-map JSON mappings could not be decoded safely.",
@@ -1359,24 +1371,37 @@ const sourceMapContext = (
   effective_url: effectiveUrl,
 });
 
+const failedSourceMapBase = (
+  request: WebSourceMapRequest,
+  limitation: string,
+  effectiveUrl: string | null,
+  responseIdentity: ResponseIdentity | undefined,
+) => ({
+  ...sourceMapContext(request, effectiveUrl),
+  artifact: null,
+  original_sources: [],
+  original_module_edges: [],
+  mappings: [],
+  limitation:
+    responseIdentity === undefined
+      ? limitation
+      : `${limitation} Response text was not retained; completed response body identity is available.`,
+});
+
+/** A map that was filtered or whose complete body may not have been read. */
 const emptySourceMapItem = (
   request: WebSourceMapRequest,
-  status: FailedSourceMapStatus,
+  status: Exclude<FailedSourceMapStatus, "invalid">,
   limitation: string,
   effectiveUrl: string | null = null,
   responseIdentity?: ResponseIdentity,
 ): WebSourceMapItem => {
-  const base = {
-    ...sourceMapContext(request, effectiveUrl),
-    artifact: null,
-    original_sources: [],
-    original_module_edges: [],
-    mappings: [],
-    limitation:
-      responseIdentity === undefined
-        ? limitation
-        : `${limitation} Response text was not retained; completed response body identity is available.`,
-  };
+  const base = failedSourceMapBase(
+    request,
+    limitation,
+    effectiveUrl,
+    responseIdentity,
+  );
   return status === "policy_filtered"
     ? { ...base, status }
     : {
@@ -1387,6 +1412,18 @@ const emptySourceMapItem = (
           : { response_identity: responseIdentity }),
       };
 };
+
+/** A completely read body that is not a usable map keeps its identity. */
+const invalidSourceMapItem = (
+  request: WebSourceMapRequest,
+  limitation: string,
+  effectiveUrl: string | null,
+  responseIdentity: ResponseIdentity,
+): WebSourceMapItem => ({
+  ...failedSourceMapBase(request, limitation, effectiveUrl, responseIdentity),
+  status: "invalid",
+  response_identity: responseIdentity,
+});
 
 const sourceMapTextArtifact = (
   text: string,
@@ -1471,19 +1508,6 @@ const expandedOutputFailure = (
     `Expanded source-map evidence exceeds public representation admission.`,
     "output_bytes",
     limits.outputBytes,
-  );
-
-const sourceMapOutputError = (
-  cause: ParseFailureError<"limit">,
-  limits: SourceMapLimits,
-  options?: AnalysisErrorOptions,
-): AnalysisResourceConstraintError =>
-  new AnalysisResourceConstraintError(
-    "analyze_web_bundle",
-    "transport",
-    cause.message,
-    { maximum_source_map_output_bytes: limits.outputBytes },
-    { cause, ...options },
   );
 
 const resolvedSourceLimitFailure = (
@@ -1593,15 +1617,10 @@ const resolveOriginalSource = (
   }
 };
 
-const sourceMediaType = (source: string | null): string => {
-  const path = source === null ? null : originalSourcePath(source);
-  return path?.endsWith(".ts") ||
-    path?.endsWith(".tsx") ||
-    path?.endsWith(".mts") ||
-    path?.endsWith(".cts")
+const sourceMediaType = (source: string | null): string =>
+  source !== null && isTypeScriptSourcePath(originalSourcePath(source))
     ? "text/typescript"
     : "text/javascript";
-};
 
 const originalDependency = (
   node: t.Node,
@@ -1619,14 +1638,13 @@ const originalDependency = (
       ? null
       : { kind: "dynamic_import", specifier };
   }
-  if (
-    (t.isCallExpression(node) || t.isOptionalCallExpression(node)) &&
-    t.isIdentifier(node.callee, { name: "require" })
-  ) {
+  if (t.isCallExpression(node) || t.isOptionalCallExpression(node)) {
+    const callee = unwrapJavaScriptExpression(node.callee).node;
+    if (!t.isIdentifier(callee, { name: "require" })) return null;
     const specifier = stringValue(node.arguments[0]);
     return specifier === undefined
       ? null
-      : { kind: "require", specifier, requireCallee: node.callee };
+      : { kind: "require", specifier, requireCallee: callee };
   }
   // `import x = require("m")` is only legal at module top level and always
   // refers to the host loader, so it needs no unbound-`require` check. An

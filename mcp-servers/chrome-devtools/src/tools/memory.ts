@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {MAX_NAME_LENGTH} from '../formatters/HeapSnapshotFormatter.js';
+import {MAX_NAME_LENGTH} from '../formatters/constants.js';
 import {zod} from '../third_party/index.js';
 import {byteSizeRangeSchema} from '../utils/bytes.js';
 
@@ -581,12 +581,14 @@ export const queryHeapSnapshotObjects: BrowserlessToolFactory =
       className: zod
         .string()
         .optional()
-        .describe('Optional regex or text matching object class name.'),
+        .describe(
+          'Optional case-insensitive regex matching object class name. Escape special characters to match them literally.',
+        ),
       propertyName: zod
         .string()
         .optional()
         .describe(
-          'Optional property name filter for outgoing reference edges.',
+          'Optional case-insensitive regex matching property names of outgoing reference edges. Escape special characters to match them literally.',
         ),
       nodeType: zod
         .string()

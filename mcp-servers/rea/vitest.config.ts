@@ -108,7 +108,7 @@ const PROJECT_POLICIES = {
   },
   "process-boundary": {
     pool: "forks" as const,
-    maxWorkers: MAX_TEST_WORKERS,
+    maxWorkers: 1,
     // Process-tree observations share host sampling resources; keep this small
     // lane serial while the independent projects run together.
     fileParallelism: false,
@@ -177,10 +177,6 @@ export default defineConfig({
   test: {
     env: {
       TMPDIR: CANONICAL_TEMPORARY_DIRECTORY,
-      // In-process servers advertise complete output schemas so SDK clients
-      // validate every structured result. Tests of the default (`off`) set
-      // the profile, or pass an environment without it, explicitly.
-      REA_MCP_OUTPUT_SCHEMA_PROFILE: "full",
     },
     maxWorkers: MAX_TEST_WORKERS,
     projects,

@@ -19,6 +19,9 @@ import {
   type Transport,
   AUTH_MODE_LABELS,
   ALL_AGENT_NAMES,
+  LISTED_AGENT_NAMES,
+  agentOptionKey,
+  type AgentOptionKey,
   getAgent,
   detectAgents,
   resolveAppendRuleFile,
@@ -51,6 +54,7 @@ import {
   getJsonServerEntry,
 } from "../setup/mcp-writer.js";
 import { writeOpenCodeServer } from "../setup/opencode-editor.js";
+import { configuredBaseUrl } from "../utils/api.js";
 
 type Scope = "global" | "project";
 type SetupMode = "mcp" | "cli";
@@ -59,7 +63,7 @@ interface McpSkillPayload {
   status: "installed" | "installed (bundled)" | "installed (bundled fallback)";
 }
 
-type SetupOptions = Partial<Record<SetupAgent, boolean>> & {
+type SetupOptions = Partial<Record<AgentOptionKey, boolean>> & {
   t3?: boolean;
   project?: boolean;
   yes?: boolean;
@@ -84,7 +88,8 @@ const CHECKBOX_THEME = {
 
 function getSelectedAgents(options: SetupOptions): SetupAgent[] {
   return ALL_AGENT_NAMES.filter(
-    (name) => options[name] || (options.t3 && (name === "claude" || name === "codex"))
+    (name) =>
+      options[agentOptionKey(name)] || (options.t3 && (name === "claude" || name === "codex"))
   );
 }
 
@@ -109,7 +114,8 @@ export function registerSetupCommand(program: Command): void {
     // lets Commander accept --base-url after `setup`.
     .option("--base-url <url>", "Use a custom Context7 deployment (for example, on-premise)")
     .action(async (_options: SetupOptions, command: Command) => {
-      await setupCommand(command.optsWithGlobals<SetupOptions>());
+      const options = command.optsWithGlobals<SetupOptions>();
+      await setupCommand({ ...options, baseUrl: configuredBaseUrl(options.baseUrl) });
     });
 }
 
@@ -233,7 +239,7 @@ async function resolveCliAuth(apiKey?: string): Promise<void> {
 }
 
 async function promptAgents(): Promise<SetupAgent[] | null> {
-  const choices = ALL_AGENT_NAMES.map((name): { name: string; value: SetupAgent | "t3" } => ({
+  const choices = LISTED_AGENT_NAMES.map((name): { name: string; value: SetupAgent | "t3" } => ({
     name: getAgent(name).displayName,
     value: name,
   }));

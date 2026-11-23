@@ -16,7 +16,7 @@ function getSourceReputationLabel(
 }
 
 /**
- * Libraries built from a Git repository have source that query-code can search.
+ * Libraries built from a Git repository have source that the code tools can search.
  * This is a client-side guess from the ID and the branch: the server decides
  * with sourceRepo() in its /api/v2/code route and answers 422 "no_source".
  * Keep the rule the same as hasSourceCode in packages/cli/src/utils/api.ts.
@@ -27,7 +27,7 @@ export function hasSourceCode(result: Pick<SearchResult, "id" | "branch">): bool
 
 /** Options for formatSearchResult and formatSearchResults. */
 export interface FormatOptions {
-  /** Mark the results whose source code query-code can search. */
+  /** Mark the results whose source code the code tools can search. */
   sourceCode?: boolean;
 }
 
@@ -60,17 +60,14 @@ export function formatSearchResult(result: SearchResult, options: FormatOptions 
     formattedResult.push(`- Benchmark Score: ${result.benchmarkScore}`);
   }
 
-  // Only add versions if it's a valid value
-  if (result.versions !== undefined && result.versions.length > 0) {
-    formattedResult.push(`- Versions: ${result.versions.join(", ")}`);
-  }
-
   if (result.source) {
     formattedResult.push(`- Source: ${result.source}`);
   }
 
   if (options.sourceCode && hasSourceCode(result)) {
-    formattedResult.push(`- Source code: searchable with query-code`);
+    formattedResult.push(
+      `- Source code: searchable with grep-code, glob-code, read-code and find-symbol`
+    );
   }
 
   // Join all parts with newlines
