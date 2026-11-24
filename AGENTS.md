@@ -1,7 +1,7 @@
 # 🤖 AGENTS.md — Hướng Dẫn Toàn Diện Cho AI Coding Agents (Mcsock-AI-repo)
 
 > **Dành cho mọi AI Agent (Google Antigravity, Claude Code, OpenAI Codex, Cursor, Windsurf, GitHub Copilot, OpenCode):**  
-> Khi người dùng trỏ bạn vào kho lưu trữ **`Mcsock-AI-repo`** này, đây là sổ tay hướng dẫn chính thức giúp bạn biết **cách cài đặt**, **cách kích hoạt**, và **khi nào nên sử dụng** từng công cụ trong tổng số **18 kho vũ khí (7 Bộ Skills, 3 MCP Servers, 8 Tools & Frameworks)**.
+> Khi người dùng trỏ bạn vào kho lưu trữ **`Mcsock-AI-repo`** này, đây là sổ tay hướng dẫn chính thức giúp bạn biết **cách cài đặt**, **cách kích hoạt**, và **khi nào nên sử dụng** từng công cụ trong tổng số **19 kho vũ khí (7 Bộ Skills, 3 MCP Servers, 9 Tools & Frameworks)**.
 
 ---
 
@@ -22,6 +22,7 @@ Trước khi bắt đầu bất kỳ tác vụ nào, AI Agent phải tra cứu b
 | **Hiểu Schema Database lớn, xây dựng Semantic Graph & viết Text-to-SQL** | `auto-ontology` (NVIDIA) | `tools/auto-ontology/skills/nvidia-ontology-*/SKILL.md` + MCP Server |
 | **Tra cứu tài liệu thư viện/framework mới nhất (chống hallucinate API)** | `context7` | MCP Server `@upstash/context7-mcp` + `mcp-servers/context7/skills/context7-mcp/SKILL.md` |
 | **Debug trình duyệt Chrome/Edge, kiểm tra Network, LCP, Cookie, A11y** | `chrome-devtools` | MCP Server `chrome-devtools-mcp` + `mcp-servers/chrome-devtools/skills/` |
+| **Tạo CLI harness cho phần mềm có mã nguồn** | `cli-anything` | `tools/cli-anything/codex-skill/SKILL.md` và `tools/cli-anything/cli-anything-plugin/HARNESS.md` |
 | **Điều khiển màn hình Desktop (Click, gõ phím, chụp màn hình OS)** | `agent-desktop` (Vercel) | `tools/agent-desktop/skills/agent-desktop/SKILL.md` |
 | **Cào dữ liệu Web, YouTube, Reddit, X/Twitter, GitHub, Tiểu Hồng Thư** | `agent-reach` | `tools/agent-reach/agent_reach/skill/SKILL.md` |
 | **Dịch ngược (Reverse Engineer) APK, EXE, DLL, Firmware, Web Bundle** | `rea` + `universal-modder` | `mcp-servers/rea/.agents/skills/reverse-engineer-anything/SKILL.md` |
@@ -107,6 +108,10 @@ flowchart TD
 - **Phối hợp "Tay và Não":**
   - **`universal-modder`** đóng vai trò **Chiến thuật (Playbook)**: Chỉ dẫn quy trình từng bước để trinh sát cấu trúc game/app và lên phương án can thiệp.
   - **`rea` (MCP Server)** đóng vai trò **Vũ khí thực thi (Toolchain)**: Cung cấp các lệnh gọi trực tiếp Ghidra, Rizin, Frida, JEB, APKTool để decompile mã máy và hook runtime.
+
+### ⌨️ Combo 8: Tạo CLI và tự động hóa ứng dụng (`cli-anything` + `agent-desktop` + `rea`)
+
+Tra CLI/API hiện có. Khi có mã nguồn và cần thêm giao diện lệnh, dùng `cli-anything` để tạo harness và kiểm thử trên backend thật. Với phần mềm chỉ có binary, dùng `rea` để xác định giao diện khả dụng. Dùng `agent-desktop` cho các bước cần GUI và đối chiếu đầu ra CLI với kết quả trong ứng dụng.
 
 ---
 
@@ -238,7 +243,7 @@ Thêm khối cấu hình dưới đây vào file cấu hình MCP của AI Agent 
 
 ---
 
-## 🛠️ 6. HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG 8 TOOLS & FRAMEWORKS (`tools/`)
+## 🛠️ 6. HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG 9 TOOLS & FRAMEWORKS (`tools/`)
 
 ### 5.1. `graphify` (`tools/graphify/`) — Knowledge Graph cho Codebase
 - **Công dụng:** Biến toàn bộ mã nguồn dự án thành Đồ thị Tri thức (Knowledge Graph) lưu tại `graphify-out/`. Giúp AI hiểu kiến trúc dự án lớn mà **không cần đọc toàn bộ file thô** (tiết kiệm 70x token).
@@ -341,11 +346,28 @@ Thêm khối cấu hình dưới đây vào file cấu hình MCP của AI Agent 
 
 ---
 
-## 🔄 7. CẬP NHẬT TOÀN BỘ 18 REPOS TỪ UPSTREAM
+### 5.9. `cli-anything` (`tools/cli-anything/`) — Tạo CLI cho ứng dụng
+
+- **Nguồn** [HKUDS/CLI-Anything](https://github.com/HKUDS/CLI-Anything), commit `34f519533bc175d2fe287ab8316b0dd99bb9cc43`. Giữ giấy phép Apache-2.0 trong thư mục upstream.
+- **Khi dùng** Tạo, mở rộng, kiểm thử hoặc kiểm tra CLI harness cho phần mềm có mã nguồn. Harness cung cấp lệnh có cấu trúc, JSON và REPL, sử dụng backend thật của phần mềm đích.
+- **Hướng dẫn chính** Đọc `tools/cli-anything/codex-skill/SKILL.md`, `tools/cli-anything/cli-anything-plugin/HARNESS.md` và mode tương ứng trong `cli-anything-plugin/commands/`.
+- **Cài skill Codex trên Windows**
+
+  ```powershell
+  & "<MCSOCK_REPO>\tools\cli-anything\codex-skill\scripts\install.ps1"
+  ```
+
+  Installer upstream đóng gói methodology và tài nguyên tham chiếu vào `$CODEX_HOME/skills/cli-anything`, mặc định `~/.codex/skills/cli-anything`. Khởi động lại Codex sau khi cài.
+- **Cách yêu cầu** `Use CLI-Anything to build a harness for <source-path>` hoặc chọn mode `refine`, `test`, `validate`, `list`.
+- **Điều phối** Tra CLI/API có sẵn trước. Khi cần thêm giao diện lệnh từ mã nguồn, tạo harness và kiểm thử với phần mềm thật. Với phần mềm chỉ có binary, dùng REA để tìm backend hoặc giao diện khả dụng. Dùng `agent-desktop` cho bước cần GUI. Backend và mức hỗ trợ Windows phụ thuộc từng harness. Skill Codex được upstream đánh dấu Experimental.
+
+---
+
+## 🔄 7. CẬP NHẬT TOÀN BỘ 19 REPOS TỪ UPSTREAM
 
 Bất kỳ lúc nào người dùng yêu cầu kiểm tra cập nhật mới nhất cho kho vũ khí này, AI Agent chỉ cần chạy lệnh:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "<MCSOCK_REPO>\scripts\sync-upstream.ps1"
 ```
-Script sẽ tự động kiểm tra commit mới nhất của cả 18 repositories trên GitHub, hiển thị mã commit SHA + ngày cập nhật và đồng bộ vào các thư mục tương ứng.
+Script sẽ tự động kiểm tra commit mới nhất của cả 19 repositories trên GitHub, hiển thị mã commit SHA + ngày cập nhật và đồng bộ vào các thư mục tương ứng.

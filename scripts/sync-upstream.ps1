@@ -1,11 +1,3 @@
-<#
-.SYNOPSIS
-    Sync and check latest upstream updates for all 18 repositories in Mcsock-AI-repo.
-.DESCRIPTION
-    Fetches the latest commits from all 18 upstream GitHub repositories, displays commit
-    SHA and timestamp, and updates the corresponding folders in the monorepo.
-#>
-
 [CmdletBinding()]
 param()
 
@@ -32,11 +24,12 @@ $repos = @(
     [PSCustomObject]@{ Cat = "tools";       Name = "skill-autopilot";   Url = "https://github.com/deepshal99/skill-autopilot.git" },
     [PSCustomObject]@{ Cat = "tools";       Name = "agent-desktop";     Url = "https://github.com/vercel-labs/agent-desktop.git" },
     [PSCustomObject]@{ Cat = "tools";       Name = "auto-ontology";     Url = "https://github.com/NVIDIA/auto-ontology.git" },
-    [PSCustomObject]@{ Cat = "tools";       Name = "design-md";         Url = "https://github.com/google-labs-code/design.md.git" }
+    [PSCustomObject]@{ Cat = "tools";       Name = "design-md";         Url = "https://github.com/google-labs-code/design.md.git" },
+    [PSCustomObject]@{ Cat = "tools";       Name = "cli-anything";      Url = "https://github.com/HKUDS/CLI-Anything.git" }
 )
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  Mcsock-AI-repo: Syncing 18 upstream repositories" -ForegroundColor Cyan
+Write-Host "  Mcsock-AI-repo: Syncing $($repos.Count) upstream repositories" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 $tempDir = Join-Path $env:TEMP ("sync_upstream_" + [System.Guid]::NewGuid().ToString("N"))
